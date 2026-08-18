@@ -35,3 +35,11 @@ curl http://127.0.0.1:8000/documents/<document_id>/chunks
 
 The chunking endpoint uses a 1,000-character chunk size and 200-character
 overlap by default, while preserving the source page for every chunk.
+
+Create embeddings and store the chunks in Chroma with:
+
+```bash
+curl -X POST http://127.0.0.1:8000/documents/<document_id>/index
+```
+
+This uses `EMBEDDING_MODEL` and `CHROMA_DIR` from `backend/.env`.
