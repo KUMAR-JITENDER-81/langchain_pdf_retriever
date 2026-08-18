@@ -1,12 +1,14 @@
 from pathlib import Path
 import re
-from shutil import copyfileobj
 from uuid import uuid4
 
 from fastapi import UploadFile
 from pypdf import PdfReader
 
 from app.core.config import settings
+
+PDF_SIGNATURE = b"%PDF-"
+COPY_BUFFER_SIZE = 1024 * 1024
 
 
 def save_pdf(upload: UploadFile) -> dict[str, str]:
@@ -25,9 +27,26 @@ def save_pdf(upload: UploadFile) -> dict[str, str]:
     document_id = uuid4().hex
     stored_name = f"{document_id}.pdf"
     destination = upload_directory / stored_name
+    max_upload_bytes = int(settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024)
 
-    with destination.open("wb") as output_file:
-        copyfileobj(upload.file, output_file)
+    try:
+        upload.file.seek(0)
+        if upload.file.read(len(PDF_SIGNATURE)) != PDF_SIGNATURE:
+            raise ValueError("The uploaded file is not a valid PDF")
+        upload.file.seek(0)
+
+        total_bytes = 0
+        with destination.open("wb") as output_file:
+            while chunk := upload.file.read(COPY_BUFFER_SIZE):
+                total_bytes += len(chunk)
+                if total_bytes > max_upload_bytes:
+                    raise ValueError(
+                        f"PDF exceeds the {settings.MAX_UPLOAD_SIZE_MB:g} MB size limit"
+                    )
+                output_file.write(chunk)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
 
     return {
         "document_id": document_id,

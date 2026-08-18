@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str
     CHROMA_DIR: str
     LOG_LEVEL: str
+    MAX_UPLOAD_SIZE_MB: float = 10.0
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"

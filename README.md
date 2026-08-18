@@ -44,6 +44,9 @@ curl -X POST http://127.0.0.1:8000/documents/<document_id>/index
 
 This uses `EMBEDDING_MODEL` and `CHROMA_DIR` from `backend/.env`.
 
+Copy `.env.example` to `backend/.env` and fill in the API key before indexing
+documents or using chat. Uploads are limited to 10 MB by default.
+
 Search the indexed chunks with:
 
 ```bash
@@ -76,4 +79,10 @@ Delete a document and its indexed vectors:
 
 ```bash
 curl -X DELETE http://127.0.0.1:8000/documents/<document_id>
+```
+
+Run the automated tests from the `backend` directory:
+
+```bash
+python -m pytest tests -q
 ```
