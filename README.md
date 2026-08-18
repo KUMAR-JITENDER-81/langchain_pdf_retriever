@@ -43,3 +43,14 @@ curl -X POST http://127.0.0.1:8000/documents/<document_id>/index
 ```
 
 This uses `EMBEDDING_MODEL` and `CHROMA_DIR` from `backend/.env`.
+
+Search the indexed chunks with:
+
+```bash
+curl -X POST http://127.0.0.1:8000/documents/search \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What is this document about?","k":4}'
+```
+
+The response contains the closest chunks, their page metadata, and Chroma's
+distance score. Lower distance means a closer vector match.

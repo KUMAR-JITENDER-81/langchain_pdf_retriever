@@ -1,7 +1,9 @@
 from fastapi import APIRouter, HTTPException
 from pypdf.errors import PdfReadError
 
+from app.models.request import SearchRequest
 from app.models.response import APIResponse
+from app.rag.retriever import search_documents
 from app.rag.splitter import split_pdf_text
 from app.services.pdf_service import extract_pdf_text
 from app.services.vector_service import index_document
@@ -19,6 +21,22 @@ def document_home():
     return APIResponse(
         success=True,
         message="Documents API Working"
+    )
+
+
+@router.post("/search", response_model=APIResponse)
+def document_search(request: SearchRequest):
+    try:
+        search_results = search_documents(request.question, request.k)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Document search failed") from exc
+
+    return APIResponse(
+        success=True,
+        message="Document search completed",
+        data=search_results,
     )
 
 
