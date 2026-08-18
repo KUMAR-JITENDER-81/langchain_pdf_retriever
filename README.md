@@ -65,3 +65,15 @@ curl -X POST http://127.0.0.1:8000/chat/ \
 
 The chat endpoint retrieves relevant chunks, sends them to the configured
 model, and returns an answer with source page references.
+
+List stored documents:
+
+```bash
+curl http://127.0.0.1:8000/documents/
+```
+
+Delete a document and its indexed vectors:
+
+```bash
+curl -X DELETE http://127.0.0.1:8000/documents/<document_id>
+```

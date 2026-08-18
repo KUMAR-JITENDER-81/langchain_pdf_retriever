@@ -5,8 +5,8 @@ from app.models.request import SearchRequest
 from app.models.response import APIResponse
 from app.rag.retriever import search_documents
 from app.rag.splitter import split_pdf_text
-from app.services.pdf_service import extract_pdf_text
-from app.services.vector_service import index_document
+from app.services.pdf_service import delete_pdf, extract_pdf_text, list_pdfs
+from app.services.vector_service import delete_document_vectors, index_document
 
 router = APIRouter(
     prefix="/documents",
@@ -20,7 +20,8 @@ router = APIRouter(
 def document_home():
     return APIResponse(
         success=True,
-        message="Documents API Working"
+        message="Documents listed successfully",
+        data={"documents": list_pdfs()},
     )
 
 
@@ -99,4 +100,25 @@ def document_index(document_id: str):
         success=True,
         message="PDF indexed successfully",
         data=indexed_document,
+    )
+
+
+@router.delete("/{document_id}", response_model=APIResponse)
+def document_delete(document_id: str):
+    try:
+        delete_document_vectors(document_id)
+        delete_pdf(document_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Could not delete the document") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Could not delete document vectors") from exc
+
+    return APIResponse(
+        success=True,
+        message="Document deleted successfully",
+        data={"document_id": document_id},
     )

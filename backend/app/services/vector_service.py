@@ -52,3 +52,8 @@ def index_document(document_id: str) -> dict[str, object]:
         "collection": COLLECTION_NAME,
         "chroma_directory": str(Path(settings.CHROMA_DIR)),
     }
+
+
+def delete_document_vectors(document_id: str) -> None:
+    """Delete all indexed chunks belonging to one document."""
+    get_vector_store().delete(where={"document_id": document_id})

@@ -66,3 +66,32 @@ def extract_pdf_text(document_id: str) -> dict[str, object]:
         "pages": pages,
         "text": "\n\n".join(pages),
     }
+
+
+def list_pdfs() -> list[dict[str, object]]:
+    """List stored PDFs and basic filesystem metadata."""
+    upload_directory = Path(settings.UPLOAD_DIR)
+    if not upload_directory.is_dir():
+        return []
+
+    documents = []
+    for pdf_path in sorted(upload_directory.glob("*.pdf")):
+        if not re.fullmatch(r"[0-9a-f]{32}", pdf_path.stem):
+            continue
+
+        file_info = pdf_path.stat()
+        documents.append(
+            {
+                "document_id": pdf_path.stem,
+                "stored_filename": pdf_path.name,
+                "size_bytes": file_info.st_size,
+                "modified_at": file_info.st_mtime,
+            }
+        )
+
+    return documents
+
+
+def delete_pdf(document_id: str) -> None:
+    """Delete one stored PDF by its generated document ID."""
+    _pdf_path(document_id).unlink()
