@@ -54,3 +54,14 @@ curl -X POST http://127.0.0.1:8000/documents/search \
 
 The response contains the closest chunks, their page metadata, and Chroma's
 distance score. Lower distance means a closer vector match.
+
+Ask a question using the RAG chat endpoint:
+
+```bash
+curl -X POST http://127.0.0.1:8000/chat/ \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What is this document about?","k":4}'
+```
+
+The chat endpoint retrieves relevant chunks, sends them to the configured
+model, and returns an answer with source page references.

@@ -1,6 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+
 from app.models.request import ChatRequest
 from app.models.response import APIResponse
+from app.rag.chain import answer_question
 router = APIRouter(
     prefix="/chat",
     tags=["Chat"]
@@ -12,10 +14,15 @@ router = APIRouter(
 def chat(
     request: ChatRequest
 ):
+    try:
+        result = answer_question(request.question, k=request.k)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Chat generation failed") from exc
+
     return APIResponse(
         success=True,
-        message="Question Received",
-        data={
-            "question": request.question
-        }
+        message="Answer generated successfully",
+        data=result,
     )
