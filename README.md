@@ -26,3 +26,12 @@ curl http://127.0.0.1:8000/documents/<document_id>/text
 ```
 
 The extraction endpoint returns the page count, page text, and combined text.
+
+Split an uploaded document into overlapping chunks with:
+
+```bash
+curl http://127.0.0.1:8000/documents/<document_id>/chunks
+```
+
+The chunking endpoint uses a 1,000-character chunk size and 200-character
+overlap by default, while preserving the source page for every chunk.
