@@ -52,3 +52,17 @@ def test_upload_rejects_non_pdf(tmp_path, monkeypatch):
 
     assert response.status_code == 400
     assert "PDF" in response.json()["detail"]
+
+
+def test_api_token_is_required_when_configured(monkeypatch):
+    monkeypatch.setattr(settings, "API_AUTH_TOKEN", "test-token")
+    client = TestClient(app)
+
+    unauthorized = client.get("/documents/")
+    authorized = client.get(
+        "/documents/",
+        headers={"Authorization": "Bearer test-token"},
+    )
+
+    assert unauthorized.status_code == 401
+    assert authorized.status_code == 200

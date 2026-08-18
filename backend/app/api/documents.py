@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pypdf.errors import PdfReadError
 
+from app.core.security import require_api_token
 from app.models.request import SearchRequest
 from app.models.response import APIResponse
 from app.rag.retriever import search_documents
@@ -10,7 +11,8 @@ from app.services.vector_service import delete_document_vectors, index_document
 
 router = APIRouter(
     prefix="/documents",
-    tags=["Documents"]
+    tags=["Documents"],
+    dependencies=[Depends(require_api_token)],
 )
 @router.get(
     "/",
@@ -122,3 +124,4 @@ def document_delete(document_id: str):
         message="Document deleted successfully",
         data={"document_id": document_id},
     )
+from app.core.security import require_api_token

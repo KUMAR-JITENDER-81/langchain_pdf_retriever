@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Retriever</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <p class="eyebrow">LANGCHAIN PDF RETRIEVER</p>
+        <h1>Ask your documents.</h1>
+        <p class="subtitle">Upload a PDF, index it, and ask grounded questions with page sources.</p>
+      </header>
+
+      <section class="card">
+        <h2>1. Add a document</h2>
+        <form id="upload-form">
+          <input id="pdf-file" type="file" accept="application/pdf,.pdf" required />
+          <button type="submit">Upload PDF</button>
+        </form>
+        <p id="upload-status" class="status"></p>
+      </section>
+
+      <section class="card">
+        <div class="section-heading">
+          <h2>2. Your documents</h2>
+          <button id="refresh-documents" class="secondary">Refresh</button>
+        </div>
+        <div id="documents" class="documents empty">No documents uploaded yet.</div>
+      </section>
+
+      <section class="card">
+        <h2>3. Ask a question</h2>
+        <form id="chat-form">
+          <textarea id="question" rows="4" placeholder="What is this document about?" required></textarea>
+          <button type="submit">Ask</button>
+        </form>
+        <p id="chat-status" class="status"></p>
+        <article id="answer" class="answer hidden"></article>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

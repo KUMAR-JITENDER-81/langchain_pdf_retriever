@@ -1,11 +1,13 @@
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.models.response import APIResponse
+from app.core.security import require_api_token
 from app.services.pdf_service import save_pdf
 
 router = APIRouter(
     prefix="/upload",
-    tags=["Upload"]
+    tags=["Upload"],
+    dependencies=[Depends(require_api_token)],
 )
 @router.post("/", response_model=APIResponse)
 def upload_pdf_endpoint(file: UploadFile = File(...)):

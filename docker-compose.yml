@@ -1,0 +1,14 @@
+services:
+  backend:
+    build: .
+    env_file:
+      - backend/.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads:/app/backend/uploads
+      - chroma:/app/backend/chroma_db
+
+volumes:
+  uploads:
+  chroma:

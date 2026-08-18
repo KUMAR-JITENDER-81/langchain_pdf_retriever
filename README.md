@@ -86,3 +86,24 @@ Run the automated tests from the `backend` directory:
 ```bash
 python -m pytest tests -q
 ```
+
+Run the browser frontend in a second terminal:
+
+```bash
+python -m http.server 5173 --directory frontend
+```
+
+Open `http://127.0.0.1:5173` after starting the backend.
+
+## Docker
+
+Create `backend/.env` from `.env.example`, then start the backend with:
+
+```bash
+docker compose up --build
+```
+
+Uploaded PDFs and Chroma data are stored in named Docker volumes.
+
+For a deployed API, set `API_AUTH_TOKEN` in `backend/.env`. When it is set,
+all application endpoints require `Authorization: Bearer <token>`.
