@@ -3,42 +3,99 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PDF Retriever</title>
+    <meta name="description" content="OCR, search, and chat with PDF documents." />
+    <title>LangChain PDF Retriever</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <main class="shell">
-      <header>
-        <p class="eyebrow">LANGCHAIN PDF RETRIEVER</p>
-        <h1>Ask your documents.</h1>
-        <p class="subtitle">Upload a PDF, index it, and ask grounded questions with page sources.</p>
+      <header class="hero">
+        <div>
+          <p class="eyebrow">LANGCHAIN PDF RETRIEVER</p>
+          <h1>Ask the page,<br /><span>not the void.</span></h1>
+          <p class="subtitle">
+            Upload searchable, scanned, or handwritten PDFs. Answers stay grounded in
+            the documents you select.
+          </p>
+        </div>
+        <div id="service-health" class="health" aria-live="polite">
+          <span class="health-dot"></span>
+          Checking service…
+        </div>
       </header>
 
-      <section class="card">
-        <h2>1. Add a document</h2>
+      <section class="card upload-card">
+        <div class="card-heading">
+          <div>
+            <p class="step">STEP 01</p>
+            <h2>Add a PDF</h2>
+          </div>
+          <span id="upload-limit" class="quiet">Loading limits…</span>
+        </div>
         <form id="upload-form">
-          <input id="pdf-file" type="file" accept="application/pdf,.pdf" required />
-          <button type="submit">Upload PDF</button>
+          <label class="file-picker" for="pdf-file">
+            <span class="file-picker-title">Choose a PDF</span>
+            <span id="file-name" class="quiet">Searchable, scanned, or handwritten</span>
+            <input id="pdf-file" type="file" accept="application/pdf,.pdf" required />
+          </label>
+          <button id="upload-button" type="submit">Upload and index</button>
         </form>
-        <p id="upload-status" class="status"></p>
+        <div id="upload-progress" class="progress-track hidden" aria-hidden="true">
+          <span></span>
+        </div>
+        <p id="upload-status" class="status" aria-live="polite"></p>
       </section>
 
-      <section class="card">
-        <div class="section-heading">
-          <h2>2. Your documents</h2>
-          <button id="refresh-documents" class="secondary">Refresh</button>
+      <section class="card documents-card">
+        <div class="card-heading">
+          <div>
+            <p class="step">STEP 02</p>
+            <h2>Choose documents</h2>
+          </div>
+          <div class="heading-actions">
+            <button id="select-ready" class="ghost" type="button">Select ready</button>
+            <button id="refresh-documents" class="ghost" type="button">Refresh</button>
+          </div>
         </div>
         <div id="documents" class="documents empty">No documents uploaded yet.</div>
       </section>
 
-      <section class="card">
-        <h2>3. Ask a question</h2>
+      <section class="card chat-card">
+        <div class="card-heading">
+          <div>
+            <p class="step">STEP 03</p>
+            <h2>Ask a grounded question</h2>
+          </div>
+          <span id="selected-count" class="selection-count">0 selected</span>
+        </div>
+
         <form id="chat-form">
-          <textarea id="question" rows="4" placeholder="What is this document about?" required></textarea>
-          <button type="submit">Ask</button>
+          <label for="answer-mode" class="field-label">Answer depth</label>
+          <select id="answer-mode">
+            <option value="quick">Quick — concise and fast</option>
+            <option value="balanced" selected>Balanced — useful detail</option>
+            <option value="deep">Deep — multi-query analysis</option>
+          </select>
+          <label for="question" class="field-label">Question</label>
+          <textarea
+            id="question"
+            rows="4"
+            maxlength="2000"
+            placeholder="What does the document say about…?"
+            required
+          ></textarea>
+          <div class="chat-actions">
+            <button id="ask-button" type="submit">Ask selected documents</button>
+            <button id="stop-button" class="danger hidden" type="button">Stop</button>
+          </div>
         </form>
-        <p id="chat-status" class="status"></p>
-        <article id="answer" class="answer hidden"></article>
+
+        <p id="chat-status" class="status" aria-live="polite"></p>
+        <article id="answer" class="answer hidden" aria-live="polite">
+          <div id="answer-text" class="answer-text"></div>
+          <div id="answer-warnings" class="warnings hidden"></div>
+          <div id="answer-sources" class="sources"></div>
+        </article>
       </section>
     </main>
     <script src="app.js"></script>

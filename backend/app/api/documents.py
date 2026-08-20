@@ -1,13 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException
-from pypdf.errors import PdfReadError
+from fastapi import APIRouter, Depends
+from fastapi.responses import FileResponse
 
+from app.core.errors import AppError
 from app.core.security import require_api_token
 from app.models.request import SearchRequest
 from app.models.response import APIResponse
 from app.rag.retriever import search_documents
 from app.rag.splitter import split_pdf_text
-from app.services.pdf_service import delete_pdf, extract_pdf_text, list_pdfs
-from app.services.vector_service import delete_document_vectors, index_document
+from app.services.indexing_service import submit_index_job, wait_for_index_job
+from app.services.metadata_service import get_document, get_index_job, get_latest_index_job
+from app.services.pdf_service import (
+    delete_pdf,
+    extract_pdf_text,
+    get_document_info,
+    get_pdf_path,
+    list_pdfs,
+)
+from app.services.vector_service import delete_document_vectors
 
 router = APIRouter(
     prefix="/documents",
@@ -29,12 +38,12 @@ def document_home():
 
 @router.post("/search", response_model=APIResponse)
 def document_search(request: SearchRequest):
-    try:
-        search_results = search_documents(request.question, request.k)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="Document search failed") from exc
+    search_results = search_documents(
+        request.question,
+        request.k,
+        request.document_ids,
+        hybrid=request.hybrid,
+    )
 
     return APIResponse(
         success=True,
@@ -43,18 +52,46 @@ def document_search(request: SearchRequest):
     )
 
 
+@router.get("/index-jobs/{job_id}", response_model=APIResponse)
+def index_job_status(job_id: str):
+    job = get_index_job(job_id)
+    if job is None:
+        raise AppError("Index job not found", code="index_job_not_found", status_code=404)
+
+    return APIResponse(
+        success=True,
+        message="Index job status retrieved",
+        data=job,
+    )
+
+
+@router.get("/{document_id}/status", response_model=APIResponse)
+def document_status(document_id: str):
+    document = get_document_info(document_id)
+    return APIResponse(
+        success=True,
+        message="Document status retrieved",
+        data={
+            "document": document,
+            "latest_job": get_latest_index_job(document_id),
+        },
+    )
+
+
+@router.get("/{document_id}/file")
+def document_file(document_id: str):
+    document = get_document_info(document_id)
+    return FileResponse(
+        path=get_pdf_path(document_id),
+        media_type="application/pdf",
+        filename=str(document.get("filename") or f"{document_id}.pdf"),
+        content_disposition_type="inline",
+    )
+
+
 @router.get("/{document_id}/text", response_model=APIResponse)
-def document_text(document_id: str):
-    try:
-        extracted_document = extract_pdf_text(document_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except PdfReadError as exc:
-        raise HTTPException(status_code=422, detail="The file is not a readable PDF") from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail="Could not read the PDF") from exc
+def document_text(document_id: str, force: bool = False):
+    extracted_document = extract_pdf_text(document_id, force=force)
 
     return APIResponse(
         success=True,
@@ -65,16 +102,7 @@ def document_text(document_id: str):
 
 @router.get("/{document_id}/chunks", response_model=APIResponse)
 def document_chunks(document_id: str):
-    try:
-        chunked_document = split_pdf_text(document_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except PdfReadError as exc:
-        raise HTTPException(status_code=422, detail="The file is not a readable PDF") from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail="Could not read the PDF") from exc
+    chunked_document = split_pdf_text(document_id)
 
     return APIResponse(
         success=True,
@@ -83,45 +111,39 @@ def document_chunks(document_id: str):
     )
 
 
-@router.post("/{document_id}/index", response_model=APIResponse)
-def document_index(document_id: str):
-    try:
-        indexed_document = index_document(document_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except PdfReadError as exc:
-        raise HTTPException(status_code=422, detail="The file is not a readable PDF") from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail="Could not read or store the PDF") from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="Embedding or vector indexing failed") from exc
+@router.post("/{document_id}/index", response_model=APIResponse, status_code=202)
+def document_index(document_id: str, force: bool = False, wait: bool = False):
+    get_document_info(document_id)
+    job, created = submit_index_job(document_id, force=force)
+    if wait:
+        job = wait_for_index_job(job["job_id"])
 
     return APIResponse(
         success=True,
-        message="PDF indexed successfully",
-        data=indexed_document,
+        message=(
+            "Indexing job queued"
+            if created
+            else "An indexing job is already active for this document"
+        ),
+        data={"job": job, "created": created},
     )
 
 
 @router.delete("/{document_id}", response_model=APIResponse)
 def document_delete(document_id: str):
-    try:
-        delete_document_vectors(document_id)
-        delete_pdf(document_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail="Could not delete the document") from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="Could not delete document vectors") from exc
+    record = get_document(document_id)
+    if record and record["status"] in {"queued", "processing"}:
+        raise AppError(
+            "Wait for indexing to finish before deleting this document",
+            code="document_busy",
+            status_code=409,
+            retryable=True,
+        )
+    delete_document_vectors(document_id)
+    delete_pdf(document_id)
 
     return APIResponse(
         success=True,
         message="Document deleted successfully",
         data={"document_id": document_id},
     )
-from app.core.security import require_api_token

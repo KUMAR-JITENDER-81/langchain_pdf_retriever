@@ -9,6 +9,7 @@ __pycache__/
 # Runtime data
 backend/uploads/
 backend/chroma_db/
+backend/data/
 backend/logs/*.log
 
 # Local editor and OS files

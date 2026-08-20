@@ -8,7 +8,23 @@ services:
     volumes:
       - uploads:/app/backend/uploads
       - chroma:/app/backend/chroma_db
+      - metadata:/app/backend/data
+      - logs:/app/backend/logs
+    init: true
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   uploads:
   chroma:
+  metadata:
+  logs:
