@@ -7,8 +7,15 @@ from app.services.local_answer_service import (
 )
 from app.rag.chain import (
     _history_text,
+    _generation_mode_for_request,
+    _looks_like_internal_planning,
     _overview_context_order,
     _merge_standalone_citation_lines,
+    _maximum_output_tokens,
+    _requested_quiz_count,
+    _task_completion_metrics,
+    _task_instruction,
+    _task_search_question,
     _uses_extractive_answer,
     clean_generated_answer,
     ensure_source_citations,
@@ -31,6 +38,69 @@ def test_standalone_model_citation_is_attached_to_previous_claim():
     )
 
     assert answer == "- Databases: MongoDB. [Source 1]\n"
+
+
+def test_quiz_request_honors_the_user_requested_count():
+    assert _requested_quiz_count("Create a quiz of 20 questions.") == 20
+    assert _requested_quiz_count("Create a five-question quiz.") == 5
+    instruction = _task_instruction("quiz", "Create a quiz of 20 questions.")
+
+    assert "exactly 20" in instruction
+    assert "all 20" in instruction
+    assert _generation_mode_for_request("deep", "quiz") == "balanced"
+    assert _generation_mode_for_request("deep", "answer") == "deep"
+
+
+def test_explicit_word_limit_reduces_generation_budget():
+    assert _maximum_output_tokens(
+        "answer",
+        "In no more than 120 words, explain the workflow.",
+    ) == 228
+    assert _maximum_output_tokens("quiz", "Create 20 questions under 500 words.") is None
+
+
+def test_broad_tasks_use_page_diverse_overview_retrieval():
+    query = _task_search_question("Create a study quiz.", "quiz")
+
+    assert "overview" in query
+    assert "key concepts" in query
+
+
+def test_incomplete_quiz_is_detected_and_not_silently_treated_as_complete():
+    metrics, warning = _task_completion_metrics(
+        "1. **Question:** First?\n**Answer:** First answer [Source 1].",
+        "quiz",
+        "Create 3 questions.",
+    )
+
+    assert metrics["task_complete"] is False
+    assert metrics["expected_item_count"] == 3
+    assert metrics["produced_item_count"] == 1
+    assert warning is not None
+
+
+def test_quiz_question_citation_is_removed_but_answer_citation_is_kept():
+    answer = ensure_source_citations(
+        "1. [Source 1] **Question:** What is WISE?\n"
+        "   **Answer:** WISE is a workshop information system. [Source 1]",
+        1,
+        [{"text": "WISE is a workshop information system."}],
+    )
+
+    lines = answer.splitlines()
+    assert "[Source" not in lines[0]
+    assert lines[1].endswith("[Source 1]")
+
+
+def test_numbered_claim_citation_is_moved_after_the_claim():
+    answer = ensure_source_citations(
+        "1. [Source 1] **Workflow:** Users create a production order.",
+        1,
+        [{"text": "Users create a production order in the workflow."}],
+    )
+
+    assert answer.startswith("1. **Workflow:**")
+    assert answer.endswith("[Source 1]")
 
 
 def test_attached_short_claim_does_not_duplicate_source_label():
@@ -146,6 +216,27 @@ def test_small_model_confidence_meta_sentences_are_removed():
     )
 
     assert answer == "The candidate has a B.Tech with CGPA 9.12."
+
+
+def test_grounding_meta_footer_is_removed():
+    answer = clean_generated_answer(
+        "WISE manages railway workshop workflows. [Source 1]\n\n"
+        "This summary is based on the provided document excerpts. [Source 1]"
+    )
+
+    assert answer == "WISE manages railway workshop workflows. [Source 1]"
+
+
+def test_thinking_content_is_hidden_and_planning_is_detected():
+    answer = clean_generated_answer(
+        "<think>private chain of thought</think>Maintenance is scheduled. [Source 1]"
+    )
+
+    assert answer == "Maintenance is scheduled. [Source 1]"
+    assert _looks_like_internal_planning(
+        "We are given a question. We must use only the excerpts. First, let's identify facts."
+    ) is True
+    assert _looks_like_internal_planning(answer) is False
 
 
 def test_overview_answer_filters_editor_noise():

@@ -78,6 +78,27 @@ def test_answer_modes_have_separate_time_budgets(monkeypatch):
     assert generation_service.generation_timeout_for_mode("deep") == 70.0
 
 
+def test_output_budget_expands_for_tasks_with_many_required_items():
+    assert generation_service._mode_output_tokens("balanced", 900) == 480
+    assert generation_service._mode_output_tokens("deep", 900) == 700
+    assert generation_service._mode_output_tokens(
+        "balanced",
+        900,
+        minimum=860,
+    ) == 860
+    assert generation_service._mode_output_tokens(
+        "quick",
+        700,
+        minimum=900,
+    ) == 700
+    assert generation_service._mode_output_tokens(
+        "deep",
+        900,
+        minimum=700,
+        maximum=228,
+    ) == 228
+
+
 def test_overlapping_generation_fails_fast(monkeypatch):
     monkeypatch.setattr(settings, "OLLAMA_QUEUE_TIMEOUT_SECONDS", 0.0)
     generation_service._GENERATION_SLOTS.acquire()

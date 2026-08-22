@@ -17,7 +17,7 @@ services:
     environment:
       OLLAMA_HOST: http://ollama:11434
     entrypoint: ["/bin/sh", "-c"]
-    command: ["ollama pull qwen3:0.6b && ollama pull qwen3:1.7b && ollama pull qwen3-vl:4b-instruct"]
+    command: ["ollama pull qwen3:1.7b && ollama pull qwen3-vl:4b-instruct"]
     depends_on:
       ollama:
         condition: service_healthy

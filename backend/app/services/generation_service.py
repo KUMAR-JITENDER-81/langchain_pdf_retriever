@@ -49,7 +49,7 @@ def generation_identity(mode: AnswerMode = "deep") -> tuple[str, str]:
 
 
 def generation_model_for_mode(mode: AnswerMode) -> str:
-    """Use a small text model for responsive answers and the larger model for Deep."""
+    """Use the responsive text model for Balanced and the stronger model for Deep."""
     if mode in {"quick", "balanced"}:
         return settings.OLLAMA_FAST_MODEL.strip() or settings.OLLAMA_CHAT_MODEL
     return settings.OLLAMA_CHAT_MODEL
@@ -110,6 +110,8 @@ def get_chat_model(
     mode: AnswerMode = "balanced",
     *,
     streaming: bool = False,
+    minimum_output_tokens: int = 0,
+    maximum_output_tokens: int | None = None,
 ) -> BaseChatModel:
     provider, _ = generation_identity(mode)
     if provider == "local":
@@ -125,7 +127,12 @@ def get_chat_model(
         mode,
         streaming,
         settings.TEMPERATURE,
-        settings.MAX_ANSWER_TOKENS,
+        _mode_output_tokens(
+            mode,
+            settings.MAX_ANSWER_TOKENS,
+            minimum=minimum_output_tokens,
+            maximum=maximum_output_tokens,
+        ),
         generation_timeout_for_mode(mode),
         settings.OLLAMA_KEEP_ALIVE,
         settings.OLLAMA_NUM_CTX,
@@ -139,7 +146,7 @@ def _create_chat_model(
     mode: AnswerMode,
     streaming: bool,
     temperature: float,
-    configured_max_tokens: int,
+    output_tokens: int,
     timeout: float,
     keep_alive: str,
     num_ctx: int,
@@ -149,7 +156,10 @@ def _create_chat_model(
         model=model,
         base_url=base_url,
         temperature=temperature,
-        num_predict=_mode_output_tokens(mode, configured_max_tokens),
+        top_k=30,
+        top_p=0.85,
+        repeat_penalty=1.08,
+        num_predict=output_tokens,
         num_ctx=max(2048, num_ctx),
         keep_alive=keep_alive,
         reasoning=False,
@@ -383,13 +393,22 @@ def translate_generation_error(exc: Exception) -> AppError:
     )
 
 
-def _mode_output_tokens(mode: AnswerMode, configured: int) -> int:
+def _mode_output_tokens(
+    mode: AnswerMode,
+    configured: int,
+    *,
+    minimum: int = 0,
+    maximum: int | None = None,
+) -> int:
     limits = {
-        "quick": min(configured, 120),
-        "balanced": min(configured, 190),
-        "deep": min(configured, 220),
+        "quick": min(configured, 240),
+        "balanced": min(configured, 480),
+        "deep": min(configured, 700),
     }
-    return max(96, limits[mode])
+    selected = min(configured, max(128, minimum, limits[mode]))
+    if maximum is not None:
+        selected = min(selected, max(128, maximum))
+    return selected
 
 
 def _model_is_installed(target: str, installed: list[str]) -> bool:

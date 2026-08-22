@@ -4,8 +4,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     # Free, local providers. No API key or paid service is required.
     GENERATION_PROVIDER: str = "ollama"
-    OLLAMA_FAST_MODEL: str = "qwen3:0.6b"
-    OLLAMA_CHAT_MODEL: str = "qwen3:1.7b"
+    OLLAMA_FAST_MODEL: str = "qwen3:1.7b"
+    OLLAMA_CHAT_MODEL: str = "qwen3-vl:4b-instruct"
     LOCAL_ANSWER_MODEL: str = "extractive-v1"
     LOCAL_ANSWER_FALLBACK: bool = True
     QUICK_MODE_LOCAL: bool = True
@@ -15,22 +15,22 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
     OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
     OLLAMA_KEEP_ALIVE: str = "10m"
-    OLLAMA_NUM_CTX: int = 3072
+    OLLAMA_NUM_CTX: int = 8192
     OLLAMA_AUTO_MODEL_FALLBACK: bool = True
     OLLAMA_WARMUP_ON_START: bool = True
-    OLLAMA_WARMUP_TIMEOUT_SECONDS: float = 60.0
-    OLLAMA_BALANCED_TIMEOUT_SECONDS: float = 30.0
-    OLLAMA_DEEP_TIMEOUT_SECONDS: float = 75.0
+    OLLAMA_WARMUP_TIMEOUT_SECONDS: float = 90.0
+    OLLAMA_BALANCED_TIMEOUT_SECONDS: float = 150.0
+    OLLAMA_DEEP_TIMEOUT_SECONDS: float = 240.0
     OLLAMA_QUEUE_TIMEOUT_SECONDS: float = 2.0
     OLLAMA_MAX_CONCURRENT_GENERATIONS: int = 1
 
     # Generation
-    TEMPERATURE: float = 0.0
-    MAX_ANSWER_TOKENS: int = 300
-    GENERATION_TIMEOUT_SECONDS: float = 75.0
-    BALANCED_CONTEXT_CHARACTERS: int = 5600
-    DEEP_CONTEXT_CHARACTERS: int = 6800
-    MAX_HISTORY_CHARACTERS: int = 1600
+    TEMPERATURE: float = 0.1
+    MAX_ANSWER_TOKENS: int = 900
+    GENERATION_TIMEOUT_SECONDS: float = 240.0
+    BALANCED_CONTEXT_CHARACTERS: int = 9000
+    DEEP_CONTEXT_CHARACTERS: int = 10000
+    MAX_HISTORY_CHARACTERS: int = 2400
 
     # Storage
     UPLOAD_DIR: str = "uploads"
@@ -74,10 +74,10 @@ class Settings(BaseSettings):
     EMBEDDING_BATCH_SIZE: int = 64
     CHUNK_SIZE_TOKENS: int = 450
     CHUNK_OVERLAP_TOKENS: int = 75
-    DEFAULT_RETRIEVAL_K: int = 6
+    DEFAULT_RETRIEVAL_K: int = 8
     MAX_RETRIEVAL_K: int = 20
     RETRIEVAL_CANDIDATE_MULTIPLIER: int = 5
-    OVERVIEW_RETRIEVAL_K: int = 8
+    OVERVIEW_RETRIEVAL_K: int = 12
     MAX_VECTOR_DISTANCE: float = 1.35
     MIN_RETRIEVAL_RELEVANCE: float = 0.12
     HYBRID_SEARCH_ENABLED: bool = True

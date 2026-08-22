@@ -582,7 +582,7 @@ elements.chatForm.addEventListener("submit", async (event) => {
   const question = elements.question.value.trim();
   const mode = elements.mode.value;
   const task = elements.task.value;
-  const k = mode === "quick" ? 4 : mode === "deep" ? 8 : 5;
+  const k = mode === "quick" ? 4 : mode === "deep" ? 12 : 8;
   const startedAt = performance.now();
   state.chatController = new AbortController();
   elements.askButton.disabled = true;
