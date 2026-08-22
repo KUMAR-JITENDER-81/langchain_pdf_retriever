@@ -11,6 +11,7 @@ backend/uploads/
 backend/chroma_db/
 backend/data/
 backend/logs/*.log
+backend/evaluation/*.report.json
 
 # Local editor and OS files
 .vscode/*.log

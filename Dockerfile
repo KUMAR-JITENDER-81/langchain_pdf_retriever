@@ -2,6 +2,7 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    HOME=/app \
     TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 
 WORKDIR /app
@@ -19,8 +20,8 @@ RUN addgroup --system app \
 COPY --chown=app:app backend ./backend
 WORKDIR /app/backend
 
-RUN mkdir -p uploads chroma_db data logs \
-    && chown -R app:app uploads chroma_db data logs
+RUN mkdir -p uploads chroma_db data logs /app/.cache/chroma \
+    && chown -R app:app uploads chroma_db data logs /app/.cache
 
 ENV PYTHONPATH=/app/backend
 EXPOSE 8000

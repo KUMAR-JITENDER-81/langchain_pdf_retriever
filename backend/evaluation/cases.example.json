@@ -1,0 +1,14 @@
+{
+  "cases": [
+    {
+      "id": "document-purpose",
+      "filenames": ["replace-with-your-file.pdf"],
+      "question": "What is the main purpose of this document?",
+      "mode": "balanced",
+      "task": "summary",
+      "expected_terms": ["replace", "these", "terms"],
+      "expected_pages": [1],
+      "minimum_score": 0.65
+    }
+  ]
+}

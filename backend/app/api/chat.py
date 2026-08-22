@@ -24,6 +24,8 @@ def chat(
         k=request.k,
         document_ids=request.document_ids,
         mode=request.mode,
+        task=request.task,
+        response_language=request.response_language,
         history=[message.model_dump() for message in request.history],
     )
 
@@ -41,6 +43,8 @@ def chat_stream(request: ChatRequest):
         k=request.k,
         document_ids=request.document_ids,
         mode=request.mode,
+        task=request.task,
+        response_language=request.response_language,
         history=[message.model_dump() for message in request.history],
     )
 

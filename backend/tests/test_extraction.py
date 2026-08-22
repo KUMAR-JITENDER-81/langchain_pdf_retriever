@@ -6,7 +6,12 @@ import pymupdf
 from app.core.config import settings
 from app.main import app
 from app.services import ocr_service
-from app.services.ocr_service import OCRResult, tesseract_available
+from app.services.ocr_service import (
+    OCRResult,
+    normalize_text,
+    ocr_text_quality,
+    tesseract_available,
+)
 
 
 def make_scanned_pdf(text: str) -> bytes:
@@ -77,23 +82,49 @@ def test_native_pdf_does_not_call_ocr(monkeypatch):
     assert extracted["native_page_count"] == 1
     assert extracted["ocr_pages_attempted"] == 0
     assert extracted["page_details"][0]["method"] == "native"
+    assert extracted["page_details"][0]["text_quality"] > 0
+    assert extracted["average_text_quality"] > 0
+
+
+def test_page_preview_renders_highlighted_png():
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((72, 100), "Highlighted source evidence", fontsize=14)
+    payload = document.tobytes()
+    document.close()
+
+    client = TestClient(app)
+    upload = client.post(
+        "/upload/",
+        files={"file": ("preview.pdf", payload, "application/pdf")},
+    )
+    document_id = upload.json()["data"]["document_id"]
+
+    preview = client.get(
+        f"/documents/{document_id}/pages/1/preview?x0=65&y0=80&x1=280&y1=110"
+    )
+
+    assert preview.status_code == 200
+    assert preview.headers["content-type"] == "image/png"
+    assert preview.headers["x-evidence-highlighted"] == "true"
+    assert preview.content.startswith(b"\x89PNG")
 
 
 def test_handwriting_fallback_is_cached(monkeypatch):
     calls = {"count": 0}
 
-    def fake_openai_ocr(page, page_number):
+    def fake_ollama_ocr(page, page_number):
         calls["count"] += 1
         return OCRResult(
             text="Handwritten meeting note: approve project Cedar.",
-            method="openai",
+            method="ollama-vision",
             confidence=0.82,
             handwritten=True,
         )
 
     monkeypatch.setattr(settings, "OCR_ENABLED", True)
-    monkeypatch.setattr(settings, "OCR_PROVIDER", "openai")
-    monkeypatch.setattr(ocr_service, "_run_openai_ocr", fake_openai_ocr)
+    monkeypatch.setattr(settings, "OCR_PROVIDER", "ollama")
+    monkeypatch.setattr(ocr_service, "_run_ollama_ocr", fake_ollama_ocr)
     client = TestClient(app)
     upload = client.post(
         "/upload/",
@@ -111,6 +142,15 @@ def test_handwriting_fallback_is_cached(monkeypatch):
     second = client.get(f"/documents/{document_id}/text").json()["data"]
 
     assert first["handwritten_page_count"] == 1
-    assert first["page_details"][0]["method"] == "openai"
+    assert first["page_details"][0]["method"] == "ollama-vision"
     assert second["text"] == first["text"]
     assert calls["count"] == 1
+
+
+def test_text_cleanup_repairs_mojibake_and_scores_noise_lower():
+    repaired = normalize_text("Itâ€™s useful â€” and readableâ€¦")
+    readable = "Backend development uses Node.js, Express, MongoDB, and REST APIs."
+    noisy = "| ae % = TT roe Â¢ ~, â€œa NY â€˜Â¢. tA ) \\ sow FES Ã© }"
+
+    assert repaired == "It’s useful — and readable..."
+    assert ocr_text_quality(readable) > ocr_text_quality(noisy)

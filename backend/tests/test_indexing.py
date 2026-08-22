@@ -1,4 +1,5 @@
 import hashlib
+from threading import Event
 
 from fastapi.testclient import TestClient
 import pymupdf
@@ -87,3 +88,46 @@ def test_background_job_exposes_provider_quota_error(monkeypatch):
     assert job["status"] == "failed"
     assert job["error_code"] == "provider_quota_exceeded"
     assert "quota" in job["error_message"].lower()
+
+
+def test_running_index_job_can_be_cancelled(monkeypatch):
+    started = Event()
+    continue_work = Event()
+
+    def slow_index(document_id, force=False, progress_callback=None):
+        started.set()
+        assert continue_work.wait(timeout=3)
+        if progress_callback:
+            progress_callback("extracting_text", 0.5)
+        return {
+            "chunk_count": 1,
+            "embedding_provider": "local",
+            "embedding_model": "test",
+            "collection": "test",
+            "index_fingerprint": "test",
+        }
+
+    monkeypatch.setattr(indexing_service, "index_document", slow_index)
+    client = TestClient(app)
+    upload = client.post(
+        "/upload/",
+        files={
+            "file": (
+                "cancel.pdf",
+                make_native_pdf("A document whose indexing job will be cancelled." * 3),
+                "application/pdf",
+            )
+        },
+    )
+    document_id = upload.json()["data"]["document_id"]
+    queued = client.post(f"/documents/{document_id}/index").json()["data"]["job"]
+    assert started.wait(timeout=3)
+
+    cancellation = client.post(f"/documents/{document_id}/index/cancel")
+    continue_work.set()
+    final_job = indexing_service.wait_for_index_job(queued["job_id"], timeout=3)
+
+    assert cancellation.status_code == 200
+    assert final_job["status"] == "cancelled"
+    status = client.get(f"/documents/{document_id}/status").json()["data"]["document"]
+    assert status["status"] == "uploaded"

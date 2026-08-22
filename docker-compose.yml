@@ -1,8 +1,36 @@
 services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  ollama-model:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["ollama pull qwen3:0.6b && ollama pull qwen3:1.7b && ollama pull qwen3-vl:4b-instruct"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
   backend:
     build: .
     env_file:
       - backend/.env
+    environment:
+      EMBEDDING_PROVIDER: local
+      GENERATION_PROVIDER: ollama
+      OLLAMA_BASE_URL: http://ollama:11434
     ports:
       - "8000:8000"
     volumes:
@@ -10,6 +38,12 @@ services:
       - chroma:/app/backend/chroma_db
       - metadata:/app/backend/data
       - logs:/app/backend/logs
+      - embedding-models:/app/.cache/chroma
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-model:
+        condition: service_completed_successfully
     init: true
     restart: unless-stopped
 
@@ -28,3 +62,5 @@ volumes:
   chroma:
   metadata:
   logs:
+  embedding-models:
+  ollama-models:

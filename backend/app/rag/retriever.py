@@ -4,6 +4,7 @@ from collections import Counter
 import math
 from pathlib import Path
 import re
+import time
 from typing import Any
 
 from langchain_chroma import Chroma
@@ -11,12 +12,37 @@ from langchain_chroma import Chroma
 from app.core.config import settings
 from app.core.errors import AppError
 from app.services.embedding_service import translate_embedding_error
+from app.services.local_answer_service import is_overview_question
 from app.services.metadata_service import get_document, list_document_records
+from app.services.ocr_service import normalize_text, ocr_text_quality
+from app.services.reranker_service import rerank_candidates
 from app.services.vector_service import current_collection_name, get_vector_store
 
 
 TOKEN_PATTERN = re.compile(r"\w+", re.UNICODE)
 RRF_CONSTANT = 60
+QUERY_STOP_WORDS = {
+    "a", "about", "an", "and", "are", "as", "at", "be", "by", "document",
+    "does", "for", "from", "how", "in", "is", "it", "of", "on", "or", "pdf",
+    "please", "tell", "that", "the", "this", "to", "was", "what", "when",
+    "where", "which", "who", "why", "with",
+}
+OVERVIEW_SIGNALS = (
+    " introduction ", " overview ", " is a ", " are ", " means ", " provides ",
+    " features ", " benefits ", " architecture ", " concepts ", " fundamentals ",
+)
+UI_NOISE_TERMS = (
+    " explorer ", " outline ", " timeline ", " spaces:", " utf-8", " go live",
+    " prettier ", " localhost:", " package-lock.json", " node_modules ",
+    " home workspaces ", " my workspace ", " postman ", " form-data ",
+    " x-www-form-urlencoded ", " graphql ", " invite ", " upgrade ",
+    " inbox ", " gmail ", " youtube ", " course builder ", " file upload ",
+    " mic setup ", " shureplus ",
+)
+TABLE_QUERY_SIGNALS = (
+    "table", "row", "column", "amount", "total", "price", "compare",
+    "highest", "lowest", "average", "invoice", "quantity", "date",
+)
 
 
 def search_documents(
@@ -27,6 +53,7 @@ def search_documents(
     hybrid: bool = True,
 ) -> dict[str, object]:
     """Run scoped dense + BM25 retrieval and return reranked, filtered chunks."""
+    started_at = time.perf_counter()
     normalized_question = " ".join(question.split())
     if not normalized_question:
         raise AppError("Question cannot be empty", code="empty_question")
@@ -40,6 +67,11 @@ def search_documents(
 
     selected_documents = _select_documents(document_ids or [])
     selected_ids = [str(document["document_id"]) for document in selected_documents]
+    retrieval_question = _enrich_overview_query(
+        normalized_question,
+        selected_documents,
+    )
+    overview_question = is_overview_question(normalized_question)
     metadata_filter = _document_filter(selected_ids)
     candidate_limit = min(
         max(result_limit * settings.RETRIEVAL_CANDIDATE_MULTIPLIER, result_limit),
@@ -52,19 +84,20 @@ def search_documents(
 
     try:
         dense_matches = get_vector_store().similarity_search_with_score(
-            normalized_question,
+            retrieval_question,
             k=candidate_limit,
             filter=metadata_filter,
         )
         for rank, (document, distance) in enumerate(dense_matches, start=1):
             key = _candidate_key(document.metadata, document.page_content)
             candidates[key] = {
-                "text": document.page_content,
+                "text": normalize_text(document.page_content),
                 "metadata": dict(document.metadata),
                 "distance": float(distance),
                 "dense_rank": rank,
                 "keyword_rank": None,
                 "bm25_score": 0.0,
+                "overview_rank": None,
             }
     except Exception as exc:
         dense_error = translate_embedding_error(exc)
@@ -73,7 +106,7 @@ def search_documents(
     corpus_truncated = False
     if hybrid and settings.HYBRID_SEARCH_ENABLED:
         keyword_candidates, corpus_truncated = _keyword_candidates(
-            normalized_question,
+            retrieval_question,
             metadata_filter,
             candidate_limit,
         )
@@ -87,11 +120,30 @@ def search_documents(
             else:
                 candidates[key] = candidate
 
+    if overview_question:
+        for candidate in _representative_candidates(
+            metadata_filter,
+            selected_documents,
+            candidate_limit,
+        ):
+            key = _candidate_key(candidate["metadata"], candidate["text"])
+            if key in candidates:
+                candidates[key]["overview_rank"] = candidate["overview_rank"]
+            else:
+                candidates[key] = candidate
+
     if dense_error and not candidates:
         raise dense_error
 
-    reranked = _rerank(normalized_question, list(candidates.values()))
-    results = _deduplicate(reranked, result_limit)
+    heuristic_ranked = _rerank(
+        retrieval_question,
+        list(candidates.values()),
+        overview=overview_question,
+    )
+    reranked, reranker = rerank_candidates(retrieval_question, heuristic_ranked)
+    results = _deduplicate(reranked, result_limit, overview=overview_question)
+    if reranker.get("warning"):
+        warnings.append(str(reranker["warning"]))
     if corpus_truncated:
         warnings.append(
             "Keyword search used a limited corpus; narrow the request to fewer documents"
@@ -99,11 +151,17 @@ def search_documents(
 
     return {
         "question": normalized_question,
+        "retrieval_question": retrieval_question,
         "document_ids": selected_ids,
         "result_count": len(results),
+        "candidate_count": len(candidates),
         "strategy": (
             "hybrid" if hybrid and settings.HYBRID_SEARCH_ENABLED else "dense"
         ),
+        "ranker": reranker["ranker"],
+        "reranker_model": reranker["model"],
+        "reranked_count": reranker["reranked_count"],
+        "retrieval_ms": round((time.perf_counter() - started_at) * 1000, 1),
         "results": results,
         "warnings": warnings,
     }
@@ -171,6 +229,28 @@ def _document_filter(document_ids: list[str]) -> dict[str, Any]:
     return {"document_id": {"$in": document_ids}}
 
 
+def _enrich_overview_query(
+    question: str,
+    documents: list[dict[str, Any]],
+) -> str:
+    if not is_overview_question(question):
+        return question
+    title_terms: list[str] = []
+    for document in documents[:4]:
+        filename = str(document.get("original_filename") or "")
+        stem = Path(filename).stem
+        if re.fullmatch(r"[0-9a-fA-F]{20,}", stem):
+            continue
+        cleaned = " ".join(re.findall(r"[\w]+", stem, re.UNICODE))
+        if cleaned:
+            title_terms.append(cleaned)
+    titles = " ".join(dict.fromkeys(title_terms))
+    overview_terms = "overview definition benefits principles main topics concepts"
+    if titles:
+        return f"{titles} {overview_terms} {question}"
+    return f"{overview_terms} {question}"
+
+
 def _keyword_candidates(
     question: str,
     metadata_filter: dict[str, Any],
@@ -209,15 +289,91 @@ def _keyword_candidates(
         metadata.setdefault("chunk_id", ids[index])
         candidates.append(
             {
-                "text": documents[index],
+                "text": normalize_text(documents[index]),
                 "metadata": metadata,
                 "distance": None,
                 "dense_rank": None,
                 "keyword_rank": rank,
                 "bm25_score": float(scores[index]),
+                "overview_rank": None,
             }
         )
     return candidates, truncated
+
+
+def _representative_candidates(
+    metadata_filter: dict[str, Any],
+    selected_documents: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Select readable, page-diverse chunks for summary and overview questions."""
+    store = Chroma(
+        collection_name=current_collection_name(),
+        persist_directory=str(Path(settings.CHROMA_DIR)),
+        embedding_function=None,
+    )
+    maximum = max(settings.HYBRID_MAX_CORPUS_CHUNKS, limit)
+    payload = store.get(
+        where=metadata_filter,
+        limit=maximum,
+        include=["documents", "metadatas"],
+    )
+    page_counts = {
+        str(document["document_id"]): max(int(document.get("page_count") or 1), 1)
+        for document in selected_documents
+    }
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for chunk_id, raw_text, raw_metadata in zip(
+        payload.get("ids") or [],
+        payload.get("documents") or [],
+        payload.get("metadatas") or [],
+    ):
+        metadata = dict(raw_metadata or {})
+        metadata.setdefault("chunk_id", chunk_id)
+        document_id = str(metadata.get("document_id") or "")
+        text = normalize_text(str(raw_text or ""))
+        if not document_id or len(text) < 40:
+            continue
+        grouped.setdefault(document_id, []).append(
+            {
+                "text": text,
+                "metadata": metadata,
+                "base_score": _overview_chunk_score(text, metadata),
+            }
+        )
+
+    document_count = max(len(grouped), 1)
+    per_document = max(2, math.ceil(limit / document_count))
+    selected: list[dict[str, Any]] = []
+    for document_id, chunks in grouped.items():
+        page_count = page_counts.get(document_id, 1)
+        document_selection: list[dict[str, Any]] = []
+        remaining = sorted(chunks, key=lambda item: item["base_score"], reverse=True)
+        while remaining and len(document_selection) < per_document:
+            best = max(
+                remaining[:120],
+                key=lambda item: float(item["base_score"])
+                + _page_diversity_bonus(item, document_selection, page_count),
+            )
+            remaining.remove(best)
+            document_selection.append(best)
+        selected.extend(document_selection)
+
+    selected.sort(key=lambda item: float(item["base_score"]), reverse=True)
+    output: list[dict[str, Any]] = []
+    for rank, item in enumerate(selected[:limit], start=1):
+        output.append(
+            {
+                "text": item["text"],
+                "metadata": item["metadata"],
+                "distance": None,
+                "dense_rank": None,
+                "keyword_rank": None,
+                "bm25_score": 0.0,
+                "overview_rank": rank,
+            }
+        )
+    return output
 
 
 def _bm25_scores(query: str, documents: list[str]) -> list[float]:
@@ -257,10 +413,48 @@ def _bm25_scores(query: str, documents: list[str]) -> list[float]:
     return scores
 
 
-def _rerank(question: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _overview_chunk_score(text: str, metadata: dict[str, Any]) -> float:
+    lowered = f" {text.casefold()} "
+    readability = ocr_text_quality(text)
+    words = _tokens(text)
+    richness = len(set(words)) / max(len(words), 1)
+    length_score = min(len(words) / 80, 1.0) if len(words) <= 260 else 0.75
+    signal_score = min(sum(signal in lowered for signal in OVERVIEW_SIGNALS) / 3, 1.0)
+    noise_penalty = min(sum(term in lowered for term in UI_NOISE_TERMS) / 2, 1.0)
+    heading_bonus = 0.08 if metadata.get("section") else 0.0
+    return (
+        readability * 0.46
+        + richness * 0.18
+        + length_score * 0.16
+        + signal_score * 0.20
+        + heading_bonus
+        - noise_penalty * 0.42
+    )
+
+
+def _page_diversity_bonus(
+    candidate: dict[str, Any],
+    selected: list[dict[str, Any]],
+    page_count: int,
+) -> float:
+    if not selected:
+        page = _page_number(candidate["metadata"])
+        return 0.06 / (1 + max(page - 1, 0) / max(page_count * 0.2, 1))
+    page = _page_number(candidate["metadata"])
+    closest = min(abs(page - _page_number(item["metadata"])) for item in selected)
+    return min(closest / max(page_count, 1), 0.3) * 0.6
+
+
+def _rerank(
+    question: str,
+    candidates: list[dict[str, Any]],
+    *,
+    overview: bool = False,
+) -> list[dict[str, Any]]:
     query_tokens = set(_tokens(question))
     max_bm25 = max((float(item["bm25_score"]) for item in candidates), default=0.0)
     lowered_question = question.casefold()
+    table_question = any(signal in lowered_question for signal in TABLE_QUERY_SIGNALS)
 
     reranked: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -284,19 +478,45 @@ def _rerank(question: str, candidates: list[dict[str, Any]]) -> list[dict[str, A
             else 0.0
         )
         rrf = (dense_rrf + keyword_rrf) * RRF_CONSTANT / 2
-        relevance = (
-            dense_relevance * 0.48
-            + keyword_relevance * 0.27
-            + overlap * 0.15
-            + phrase_match * 0.05
-            + rrf * 0.05
-        )
+        overview_rrf = (
+            1 / (RRF_CONSTANT + int(candidate["overview_rank"]))
+            if candidate.get("overview_rank")
+            else 0.0
+        ) * RRF_CONSTANT
+        readability = ocr_text_quality(text)
+        if overview:
+            noise_penalty = min(
+                sum(term in f" {text.casefold()} " for term in UI_NOISE_TERMS) / 2,
+                1.0,
+            )
+            relevance = (
+                dense_relevance * 0.24
+                + keyword_relevance * 0.12
+                + overlap * 0.05
+                + phrase_match * 0.03
+                + rrf * 0.06
+                + overview_rrf * 0.32
+                + readability * 0.18
+                - noise_penalty * 0.20
+            )
+        else:
+            relevance = (
+                dense_relevance * 0.45
+                + keyword_relevance * 0.25
+                + overlap * 0.15
+                + phrase_match * 0.05
+                + rrf * 0.05
+                + readability * 0.05
+            )
+        if table_question and candidate.get("metadata", {}).get("content_type") == "table":
+            relevance += 0.08
 
         if (
             distance is not None
             and float(distance) > settings.MAX_VECTOR_DISTANCE
             and keyword_relevance < 0.25
             and not phrase_match
+            and not candidate.get("overview_rank")
         ):
             continue
         if relevance < settings.MIN_RETRIEVAL_RELEVANCE:
@@ -305,6 +525,7 @@ def _rerank(question: str, candidates: list[dict[str, Any]]) -> list[dict[str, A
         metadata = dict(candidate["metadata"])
         if metadata.get("ocr_confidence") == -1.0:
             metadata["ocr_confidence"] = None
+        metadata["text_quality"] = round(readability, 3)
         reranked.append(
             {
                 "text": text,
@@ -320,9 +541,13 @@ def _rerank(question: str, candidates: list[dict[str, Any]]) -> list[dict[str, A
     return reranked
 
 
-def _deduplicate(candidates: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
-    selected: list[dict[str, Any]] = []
-    selected_token_sets: list[set[str]] = []
+def _deduplicate(
+    candidates: list[dict[str, Any]],
+    limit: int,
+    *,
+    overview: bool = False,
+) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
     seen_hashes: set[int] = set()
     for candidate in candidates:
         normalized = " ".join(str(candidate["text"]).casefold().split())
@@ -330,13 +555,72 @@ def _deduplicate(candidates: list[dict[str, Any]], limit: int) -> list[dict[str,
         if content_hash in seen_hashes:
             continue
         tokens = set(_tokens(normalized))
-        if any(_jaccard(tokens, existing) > 0.92 for existing in selected_token_sets):
+        if any(
+            _jaccard(tokens, set(_tokens(str(item["text"])))) > 0.92
+            for item in unique
+        ):
             continue
         seen_hashes.add(content_hash)
-        selected_token_sets.append(tokens)
-        selected.append(candidate)
-        if len(selected) == limit:
+        unique.append(candidate)
+        if len(unique) >= max(limit * 8, limit):
             break
+
+    selected: list[dict[str, Any]] = []
+    remaining = list(unique)
+    while remaining and len(selected) < limit:
+        best: dict[str, Any] | None = None
+        best_score = -math.inf
+        for candidate in remaining[:120]:
+            candidate_tokens = set(_tokens(str(candidate["text"])))
+            redundancy = max(
+                (
+                    _jaccard(candidate_tokens, set(_tokens(str(item["text"]))))
+                    for item in selected
+                ),
+                default=0.0,
+            )
+            metadata = candidate["metadata"]
+            document_id = metadata.get("document_id")
+            new_document_bonus = (
+                0.07
+                if selected
+                and all(item["metadata"].get("document_id") != document_id for item in selected)
+                else 0.0
+            )
+            same_page_penalty = (
+                0.12
+                if any(
+                    item["metadata"].get("document_id") == document_id
+                    and _page_number(item["metadata"]) == _page_number(metadata)
+                    for item in selected
+                )
+                else 0.0
+            )
+            nearby_page_penalty = 0.0
+            if overview:
+                nearby_page_penalty = max(
+                    (
+                        0.06
+                        for item in selected
+                        if item["metadata"].get("document_id") == document_id
+                        and abs(_page_number(item["metadata"]) - _page_number(metadata)) <= 2
+                    ),
+                    default=0.0,
+                )
+            score = (
+                float(candidate["relevance"])
+                - redundancy * (0.34 if overview else 0.24)
+                + new_document_bonus
+                - same_page_penalty
+                - nearby_page_penalty
+            )
+            if score > best_score:
+                best = candidate
+                best_score = score
+        if best is None:
+            break
+        remaining.remove(best)
+        selected.append(best)
     return selected
 
 
@@ -348,7 +632,18 @@ def _candidate_key(metadata: dict[str, Any], text: str) -> str:
 
 
 def _tokens(text: str) -> list[str]:
-    return [token.casefold() for token in TOKEN_PATTERN.findall(text)]
+    return [
+        token.casefold()
+        for token in TOKEN_PATTERN.findall(text)
+        if token.casefold() not in QUERY_STOP_WORDS and len(token) > 1
+    ]
+
+
+def _page_number(metadata: dict[str, Any]) -> int:
+    try:
+        return int(metadata.get("page") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _jaccard(left: set[str], right: set[str]) -> float:

@@ -15,11 +15,13 @@ from app.services.ocr_service import (
     meaningful_character_count,
     needs_ocr,
     normalize_text,
+    ocr_text_quality,
+    page_image_coverage,
     run_ocr,
 )
 
 
-EXTRACTOR_VERSION = "hybrid-v1"
+EXTRACTOR_VERSION = "local-hybrid-v4"
 ProgressCallback = Callable[[str, float], None]
 
 
@@ -43,8 +45,9 @@ def extract_document(
     fingerprint = _extraction_fingerprint(source_sha256)
 
     if not force:
-        cached = _read_cache(document_id, fingerprint)
+        cached = _read_cache(document_id, fingerprint, source_sha256)
         if cached is not None:
+            _sync_document_metadata(document_id, document_record, cached)
             if progress_callback:
                 progress_callback("extracted", 1.0)
             return cached
@@ -86,6 +89,8 @@ def extract_document(
                     "native_text": native_text,
                     "needs_ocr": should_ocr,
                     "ocr_reason": reason,
+                    "image_coverage": page_image_coverage(page),
+                    "rotation": int(page.rotation),
                     "native_blocks": _native_blocks(page),
                     "tables": _extract_tables(page) if settings.EXTRACT_TABLES else [],
                 }
@@ -105,6 +110,7 @@ def extract_document(
         native_page_count = 0
         ocr_page_count = 0
         handwritten_page_count = 0
+        vision_page_count = 0
         attempted_ocr_pages = 0
         final_character_total = 0
 
@@ -121,7 +127,15 @@ def extract_document(
             if analysis["needs_ocr"]:
                 attempted_ocr_pages += 1
                 try:
-                    result = run_ocr(pdf.load_page(page_index), page_index + 1)
+                    allow_vision = (
+                        settings.OCR_PROVIDER.strip().lower() == "ollama"
+                        or vision_page_count < settings.OCR_VISION_MAX_PAGES_PER_DOCUMENT
+                    )
+                    result = run_ocr(
+                        pdf.load_page(page_index),
+                        page_index + 1,
+                        allow_vision=allow_vision,
+                    )
                     page_warnings.extend(result.warnings)
                     if _prefer_ocr_text(result.text, native_text):
                         final_text = result.text
@@ -131,6 +145,8 @@ def extract_document(
                         blocks = []
                         if result.text:
                             ocr_page_count += 1
+                        if result.method == "ollama-vision":
+                            vision_page_count += 1
                         if result.handwritten:
                             handwritten_page_count += 1
                     elif result.text:
@@ -139,7 +155,7 @@ def extract_document(
                         )
                 except AppError as exc:
                     page_warnings.append(exc.message)
-                    if settings.OCR_PROVIDER.lower() in {"openai", "tesseract"}:
+                    if settings.OCR_PROVIDER.lower() in {"ollama", "tesseract"}:
                         raise
 
             if final_text and method == "native":
@@ -149,6 +165,16 @@ def extract_document(
                 table_text = "\n\n".join(table["markdown"] for table in tables)
                 if table_text and table_text not in final_text:
                     final_text = f"{final_text}\n\n{table_text}".strip()
+
+            final_text = normalize_text(final_text)
+            if (
+                method in {"tesseract", "ollama-vision"}
+                and final_text
+                and ocr_text_quality(final_text) < 0.32
+            ):
+                page_warnings.append(
+                    "OCR text remains difficult to read; verify this page in the PDF"
+                )
 
             if len(final_text) > settings.MAX_PAGE_CHARACTERS:
                 raise DocumentLimitError(
@@ -170,6 +196,9 @@ def extract_document(
                     "ocr_reason": analysis["ocr_reason"],
                     "ocr_confidence": confidence,
                     "handwritten": handwritten,
+                    "text_quality": ocr_text_quality(final_text),
+                    "image_coverage": analysis["image_coverage"],
+                    "rotation": analysis["rotation"],
                     "heading": _page_heading(final_text),
                     "blocks": blocks,
                     "tables": tables,
@@ -188,6 +217,16 @@ def extract_document(
         pages = [str(page["text"]) for page in page_details]
         combined_text = "\n\n".join(text for text in pages if text).strip()
         extraction_method = _document_method(native_page_count, ocr_page_count, page_count)
+        text_qualities = [
+            float(page["text_quality"])
+            for page in page_details
+            if page.get("character_count")
+        ]
+        low_quality_page_count = sum(
+            bool(page.get("character_count")) and float(page["text_quality"]) < 0.45
+            for page in page_details
+        )
+        table_count = sum(len(page.get("tables") or []) for page in page_details)
         extracted = {
             "document_id": document_id,
             "page_count": page_count,
@@ -200,6 +239,15 @@ def extract_document(
             "ocr_page_count": ocr_page_count,
             "ocr_pages_attempted": attempted_ocr_pages,
             "handwritten_page_count": handwritten_page_count,
+            "low_quality_page_count": low_quality_page_count,
+            "table_count": table_count,
+            "average_text_quality": (
+                round(sum(text_qualities) / len(text_qualities), 3)
+                if text_qualities
+                else None
+            ),
+            "extraction_warning_count": len(warnings),
+            "vision_page_count": vision_page_count,
             "warnings": warnings,
             "source_sha256": source_sha256,
             "extraction_fingerprint": fingerprint,
@@ -208,25 +256,7 @@ def extract_document(
         pdf.close()
 
     _write_cache(document_id, extracted)
-    if document_record:
-        next_status = (
-            document_record["status"]
-            if document_record["status"] in {"ready", "processing", "queued"}
-            else "extracted"
-        )
-        update_document(
-            document_id,
-            status=next_status,
-            stage="extracted" if next_status == "extracted" else document_record["stage"],
-            progress=1.0 if next_status == "extracted" else document_record["progress"],
-            page_count=page_count,
-            extraction_method=extraction_method,
-            native_page_count=native_page_count,
-            ocr_page_count=ocr_page_count,
-            character_count=len(combined_text),
-            error_code=None,
-            error_message=None,
-        )
+    _sync_document_metadata(document_id, document_record, extracted)
     return extracted
 
 
@@ -239,8 +269,13 @@ def _prefer_ocr_text(ocr_text: str, native_text: str) -> bool:
     native_characters = meaningful_character_count(native_text)
     if ocr_characters < 5:
         return False
-    return native_characters < settings.OCR_MIN_TEXT_CHARACTERS or ocr_characters >= int(
-        native_characters * 0.7
+    ocr_quality = ocr_text_quality(ocr_text)
+    native_quality = ocr_text_quality(native_text)
+    if native_characters < settings.OCR_MIN_TEXT_CHARACTERS:
+        return ocr_quality >= 0.18
+    return (
+        ocr_characters >= int(native_characters * 0.7)
+        and ocr_quality >= max(0.25, native_quality - 0.04)
     )
 
 
@@ -334,8 +369,11 @@ def _extraction_fingerprint(source_sha256: str) -> str:
             settings.OCR_LANGUAGES,
             str(settings.OCR_DPI),
             str(settings.OCR_MIN_TEXT_CHARACTERS),
-            str(settings.OPENAI_OCR_FALLBACK),
-            settings.OPENAI_OCR_MODEL,
+            str(settings.OCR_NATIVE_QUALITY_THRESHOLD),
+            str(settings.OLLAMA_OCR_FALLBACK),
+            settings.OLLAMA_OCR_MODEL,
+            str(settings.OCR_VISION_QUALITY_THRESHOLD),
+            str(settings.OCR_VISION_MAX_PAGES_PER_DOCUMENT),
             str(settings.EXTRACT_TABLES),
         ]
     )
@@ -348,7 +386,11 @@ def _cache_path(document_id: str) -> Path:
     return directory / f"{document_id}.json"
 
 
-def _read_cache(document_id: str, fingerprint: str) -> dict[str, Any] | None:
+def _read_cache(
+    document_id: str,
+    fingerprint: str,
+    source_sha256: str,
+) -> dict[str, Any] | None:
     path = _cache_path(document_id)
     if not path.is_file():
         return None
@@ -356,9 +398,96 @@ def _read_cache(document_id: str, fingerprint: str) -> dict[str, Any] | None:
         cached = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if cached.get("extraction_fingerprint") != fingerprint:
+    if cached.get("source_sha256") != source_sha256:
         return None
+    if cached.get("extraction_fingerprint") != fingerprint:
+        cached = _upgrade_cached_extraction(cached, fingerprint)
+        _write_cache(document_id, cached)
     return cached
+
+
+def _upgrade_cached_extraction(
+    cached: dict[str, Any],
+    fingerprint: str,
+) -> dict[str, Any]:
+    """Apply safe text cleanup to an older cache without repeating expensive OCR."""
+    page_details = list(cached.get("page_details") or [])
+    pages: list[str] = []
+    for page_index, raw_text in enumerate(cached.get("pages") or []):
+        cleaned = normalize_text(str(raw_text or ""))
+        pages.append(cleaned)
+        if page_index < len(page_details):
+            page_details[page_index]["text"] = cleaned
+            page_details[page_index]["character_count"] = len(cleaned)
+            page_details[page_index]["text_quality"] = ocr_text_quality(cleaned)
+            page_details[page_index].setdefault("image_coverage", 0.0)
+            page_details[page_index].setdefault("rotation", 0)
+            if page_details[page_index].get("blocks"):
+                for block in page_details[page_index]["blocks"]:
+                    block["text"] = normalize_text(str(block.get("text") or ""))
+    combined_text = "\n\n".join(text for text in pages if text).strip()
+    warnings = list(cached.get("warnings") or [])
+    warnings.append(
+        "Existing OCR was reused with upgraded text cleanup; force re-index to rerun OCR"
+    )
+    text_qualities = [
+        float(page.get("text_quality") or 0.0)
+        for page in page_details
+        if page.get("character_count")
+    ]
+    return {
+        **cached,
+        "pages": pages,
+        "page_details": page_details,
+        "text": combined_text,
+        "character_count": len(combined_text),
+        "warnings": list(dict.fromkeys(warnings)),
+        "low_quality_page_count": sum(
+            bool(page.get("character_count"))
+            and float(page.get("text_quality") or 0.0) < 0.45
+            for page in page_details
+        ),
+        "table_count": sum(len(page.get("tables") or []) for page in page_details),
+        "average_text_quality": (
+            round(sum(text_qualities) / len(text_qualities), 3)
+            if text_qualities
+            else None
+        ),
+        "extraction_warning_count": len(set(warnings)),
+        "extraction_fingerprint": fingerprint,
+    }
+
+
+def _sync_document_metadata(
+    document_id: str,
+    document_record: dict[str, Any] | None,
+    extracted: dict[str, Any],
+) -> None:
+    if not document_record:
+        return
+    next_status = (
+        document_record["status"]
+        if document_record["status"] in {"ready", "processing", "queued"}
+        else "extracted"
+    )
+    update_document(
+        document_id,
+        status=next_status,
+        stage="extracted" if next_status == "extracted" else document_record["stage"],
+        progress=1.0 if next_status == "extracted" else document_record["progress"],
+        page_count=extracted.get("page_count"),
+        extraction_method=extracted.get("extraction_method"),
+        native_page_count=int(extracted.get("native_page_count") or 0),
+        ocr_page_count=int(extracted.get("ocr_page_count") or 0),
+        handwritten_page_count=int(extracted.get("handwritten_page_count") or 0),
+        low_quality_page_count=int(extracted.get("low_quality_page_count") or 0),
+        table_count=int(extracted.get("table_count") or 0),
+        average_text_quality=extracted.get("average_text_quality"),
+        extraction_warning_count=int(extracted.get("extraction_warning_count") or 0),
+        character_count=int(extracted.get("character_count") or 0),
+        error_code=None,
+        error_message=None,
+    )
 
 
 def _write_cache(document_id: str, extracted: dict[str, Any]) -> None:

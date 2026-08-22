@@ -28,6 +28,11 @@ DOCUMENT_FIELDS = {
     "extraction_method",
     "native_page_count",
     "ocr_page_count",
+    "handwritten_page_count",
+    "low_quality_page_count",
+    "table_count",
+    "average_text_quality",
+    "extraction_warning_count",
     "character_count",
     "chunk_count",
     "embedding_provider",
@@ -91,6 +96,11 @@ def initialize_metadata_store() -> None:
                 extraction_method TEXT,
                 native_page_count INTEGER NOT NULL DEFAULT 0,
                 ocr_page_count INTEGER NOT NULL DEFAULT 0,
+                handwritten_page_count INTEGER NOT NULL DEFAULT 0,
+                low_quality_page_count INTEGER NOT NULL DEFAULT 0,
+                table_count INTEGER NOT NULL DEFAULT 0,
+                average_text_quality REAL,
+                extraction_warning_count INTEGER NOT NULL DEFAULT 0,
                 character_count INTEGER NOT NULL DEFAULT 0,
                 chunk_count INTEGER NOT NULL DEFAULT 0,
                 embedding_provider TEXT,
@@ -140,6 +150,17 @@ def initialize_metadata_store() -> None:
             """
         )
         _ensure_column(connection, "documents", "vector_collection", "TEXT")
+        _ensure_column(
+            connection, "documents", "handwritten_page_count", "INTEGER NOT NULL DEFAULT 0"
+        )
+        _ensure_column(
+            connection, "documents", "low_quality_page_count", "INTEGER NOT NULL DEFAULT 0"
+        )
+        _ensure_column(connection, "documents", "table_count", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "documents", "average_text_quality", "REAL")
+        _ensure_column(
+            connection, "documents", "extraction_warning_count", "INTEGER NOT NULL DEFAULT 0"
+        )
         _INITIALIZED_DATABASES.add(database_key)
 
 

@@ -21,6 +21,7 @@ from app.services.metadata_service import get_document
 VECTOR_STORE_LOCK = RLock()
 VECTOR_STORES: dict[tuple[str, str, str, str, str], Chroma] = {}
 IndexProgressCallback = Callable[[str, float], None]
+INDEX_SCHEMA_VERSION = "chunks-v2-table-bbox"
 
 
 def current_collection_name() -> str:
@@ -37,13 +38,8 @@ def get_vector_store(collection_name: str | None = None) -> Chroma:
 
     provider, model = embedding_identity()
     selected_collection = collection_name or current_collection_name()
-    credential_marker = hashlib.sha256(
-        (
-            settings.OPENAI_API_KEY
-            if provider == "openai"
-            else settings.OLLAMA_BASE_URL
-        ).encode("utf-8")
-    ).hexdigest()[:8]
+    runtime_marker = settings.OLLAMA_BASE_URL if provider == "ollama" else model
+    credential_marker = hashlib.sha256(runtime_marker.encode("utf-8")).hexdigest()[:8]
     key = (
         str(chroma_directory.resolve()),
         selected_collection,
@@ -127,6 +123,15 @@ def index_document(
                     else -1.0
                 ),
                 "handwritten": bool(chunk["handwritten"]),
+                "content_type": str(chunk.get("content_type") or "text"),
+                "table_index": int(chunk.get("table_index") or -1),
+                "bbox_x0": _bbox_value(chunk.get("bbox"), 0),
+                "bbox_y0": _bbox_value(chunk.get("bbox"), 1),
+                "bbox_x1": _bbox_value(chunk.get("bbox"), 2),
+                "bbox_y1": _bbox_value(chunk.get("bbox"), 3),
+                "page_text_quality": float(chunk.get("text_quality") or -1.0),
+                "image_coverage": float(chunk.get("image_coverage") or 0.0),
+                "page_rotation": int(chunk.get("page_rotation") or 0),
             },
         )
         for chunk in chunks
@@ -206,8 +211,18 @@ def _index_fingerprint(
             str(chunked_document.get("extraction_fingerprint") or ""),
             str(chunked_document.get("chunk_size") or ""),
             str(chunked_document.get("chunk_overlap") or ""),
+            INDEX_SCHEMA_VERSION,
             provider,
             model,
         ]
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _bbox_value(value: object, index: int) -> float:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return -1.0
+    try:
+        return float(value[index])
+    except (TypeError, ValueError, IndexError):
+        return -1.0

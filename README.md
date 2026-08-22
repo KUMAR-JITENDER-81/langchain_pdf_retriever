@@ -9,16 +9,20 @@ vision fallback for handwritten pages.
 
 - Validated streaming uploads with configurable byte, page, document, and extraction limits
 - SHA-256 duplicate detection and preserved original filenames
-- Persistent SQLite document metadata, background jobs, progress, and safe error codes
+- Persistent SQLite metadata, recoverable/cancellable background jobs, bulk refresh, and safe errors
 - Selective PyMuPDF/Tesseract OCR with cached extraction results
-- Optional OpenAI vision transcription fallback for handwriting
-- Table extraction to Markdown and token-aware, page-preserving chunks
-- OpenAI or Ollama embeddings in provider/model-specific Chroma collections
+- Optional local Ollama vision transcription fallback for handwriting
+- Dedicated table chunks that preserve Markdown rows, page numbers, and table bounding boxes
+- Free local ONNX MiniLM or Ollama embeddings in provider/model-specific collections
 - Batched and fingerprinted indexing that skips unchanged documents
-- Document-scoped hybrid vector + BM25 retrieval, relevance filtering, and deduplication
-- Quick, Balanced, and Deep answer modes with conversation-aware retrieval
-- OpenAI or Ollama answer generation with source labels and OCR warnings
-- Server-Sent Events streaming, cancellation, source snippets, and PDF page opening
+- Document-scoped hybrid vector + BM25 retrieval followed by a local ONNX CrossEncoder reranker
+- Quick, Balanced, and Deep depth modes plus Q&A, summary, compare, extract, quiz, and translate tasks
+- Local Ollama answer generation with a built-in evidence-only fallback
+- Automatic fallback between installed Ollama text models and non-blocking startup warmup
+- Live Ollama/model readiness in the UI, with a manual warmup control
+- SSE streaming, answer cancellation, clickable citations, highlighted page previews, and full-PDF opening
+- Document-version-aware answer caching for safe instant repeats
+- Local answer IDs, timings, citation checks, feedback, quality dashboard, and regression benchmarks
 - Responsive browser UI with upload/index progress and multi-document selection
 - Optional bearer authentication, constant-time token comparison, rate limits, request IDs,
   security headers, rotating logs, Docker services, and automated tests
@@ -31,7 +35,7 @@ Requirements:
 
 - Python 3.11
 - Tesseract 5 for local OCR
-- An OpenAI API key, or a running Ollama installation for local models
+- Ollama for high-quality local answers and difficult handwriting OCR
 
 From the repository root on Windows PowerShell:
 
@@ -40,57 +44,91 @@ py -3.11 -m venv venv
 .\venv\Scripts\Activate.ps1
 python -m pip install -r requirements-dev.txt
 Copy-Item .env.example backend\.env
+winget install --exact --id Ollama.Ollama
+ollama pull qwen3:0.6b
+ollama pull qwen3:1.7b
+ollama pull qwen3-vl:4b-instruct
 ```
 
-Edit `backend/.env`, then start the API:
+Edit `backend/.env`, then start the complete application:
+
+```powershell
+.\venv\Scripts\python.exe app.py
+```
+
+The launcher checks Ollama, starts any missing backend/frontend services, opens the app,
+and prints actionable startup errors. Use `python app.py --check` to check service status or
+`python app.py --no-browser` to start without opening a browser.
+
+For manual development, start the backend:
 
 ```powershell
 Set-Location backend
 ..\venv\Scripts\python.exe -m uvicorn app.main:app --reload
 ```
 
-In a second terminal, start the frontend:
+Then start the frontend from the repository root in a second terminal:
 
 ```powershell
-python -m http.server 5173 --directory frontend
+.\venv\Scripts\python.exe -m http.server 5173 --bind 127.0.0.1 --directory frontend
 ```
 
 Open `http://127.0.0.1:5173`. API documentation is available at
 `http://127.0.0.1:8000/docs`, and health/configuration status is at `/health`.
 
-## Provider configuration
+## Free local provider configuration
 
-### OpenAI
-
-The default configuration uses OpenAI for embeddings and answers:
-
-```dotenv
-OPENAI_API_KEY=your-project-api-key
-EMBEDDING_PROVIDER=openai
-EMBEDDING_MODEL=text-embedding-3-small
-GENERATION_PROVIDER=openai
-MODEL_NAME=gpt-4o-mini
-```
-
-API billing and model access are separate from a ChatGPT subscription. If indexing reports
-`provider_quota_exceeded`, check the API project's billing balance, usage, and limits.
-Temporary rate limits are retried automatically; exhausted quota requires an account change.
-
-### Fully local with Ollama
-
-Install Ollama, pull the configured models, and use:
+No API key, subscription, or per-request payment is used. The default setup uses Chroma's
+local ONNX `all-MiniLM-L6-v2` model for semantic embeddings and Ollama for answers:
 
 ```dotenv
-EMBEDDING_PROVIDER=ollama
-OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+EMBEDDING_PROVIDER=local
+LOCAL_EMBEDDING_MODEL=all-MiniLM-L6-v2
 GENERATION_PROVIDER=ollama
-OLLAMA_CHAT_MODEL=llama3.2:3b
+OLLAMA_FAST_MODEL=qwen3:0.6b
+OLLAMA_CHAT_MODEL=qwen3:1.7b
+OLLAMA_OCR_MODEL=qwen3-vl:4b-instruct
 OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_AUTO_MODEL_FALLBACK=true
+OLLAMA_WARMUP_ON_START=true
+OLLAMA_WARMUP_TIMEOUT_SECONDS=60
+OLLAMA_BALANCED_TIMEOUT_SECONDS=30
+OLLAMA_DEEP_TIMEOUT_SECONDS=75
+OLLAMA_QUEUE_TIMEOUT_SECONDS=2
+OLLAMA_MAX_CONCURRENT_GENERATIONS=1
+BALANCED_CONTEXT_CHARACTERS=5600
+DEEP_CONTEXT_CHARACTERS=6800
+MAX_HISTORY_CHARACTERS=1600
+LOCAL_ANSWER_FALLBACK=true
+QUICK_MODE_LOCAL=true
+BALANCED_MODE_LOCAL=false
 ```
 
-Changing the embedding provider or model requires re-indexing existing documents because
-vector dimensions and semantics can differ. The API detects incompatible indexes and returns
-a clear error instead of mixing them.
+MiniLM runs inside the Python process and downloads its model files once on first use. If
+Ollama is stopped or its model is unavailable, the application automatically produces a
+grounded extractive answer from retrieved source sentences instead of failing. Existing
+documents that failed only because of OpenAI quota are automatically queued for local
+re-indexing after the backend restarts.
+
+Retrieval also uses `cross-encoder/ms-marco-MiniLM-L6-v2` as a second-stage CPU reranker.
+Its Apache-licensed ONNX file downloads once to `backend/data/models/`; if it cannot load,
+hybrid ranking continues automatically. Use `POST /reranker/warmup` to install and warm it
+before the first question.
+
+The backend preloads the Balanced model in the background at startup, and the browser shows
+which text and vision models are installed. `POST /ollama/warmup` can be used to preload the
+Balanced model again after Ollama has released it from memory. If either configured text
+model is missing, the application can temporarily use the other installed text model while
+keeping citations and the evidence-only fallback active.
+
+Balanced mode has a bounded CPU time budget, and overlapping Ollama requests fail over to
+the instant cited-evidence engine instead of queuing for a minute. Retrieved overview chunks
+are presented in document order, visible headings provide a conservative document-type hint,
+and conversation/evidence text is capped so long chats cannot overflow the model context.
+
+You can optionally use `EMBEDDING_PROVIDER=ollama` with
+`OLLAMA_EMBEDDING_MODEL=nomic-embed-text`. Changing embedding models requires re-indexing
+because vector dimensions and semantics differ.
 
 ## OCR and handwriting
 
@@ -98,74 +136,90 @@ The default `OCR_PROVIDER=auto` flow attempts native text first and uses Tessera
 pages that need OCR. On Windows, the application checks common Tesseract installation paths;
 set `TESSERACT_DATA_PATH` explicitly if language data is elsewhere.
 
-For difficult handwriting, enable the image-capable fallback:
+For difficult handwriting, a free image-capable Ollama model is used:
 
 ```dotenv
 OCR_ENABLED=true
 OCR_PROVIDER=auto
-OPENAI_OCR_FALLBACK=true
-OPENAI_OCR_MODEL=gpt-4o-mini
+OLLAMA_OCR_FALLBACK=true
+OLLAMA_OCR_MODEL=qwen3-vl:4b-instruct
 OCR_LANGUAGES=eng
 OCR_DPI=300
 ```
 
-You can also use `OCR_PROVIDER=openai` to route every OCR-required page directly to vision.
-This can improve handwriting recognition but adds cost, network latency, and a data-sharing
-consideration. Keep it disabled when PDFs must remain local. OCR cannot guarantee perfect
-transcription; review low-confidence passages against the linked source page.
+Use `OCR_PROVIDER=ollama` to force every OCR-required page through local vision. In `auto`
+mode, fast Tesseract runs first and Ollama is used only when its output looks uncertain.
+Auto mode limits expensive vision retries per document so large scans remain manageable.
+Everything stays on the computer, but vision OCR is slower than Tesseract. OCR cannot
+guarantee perfect transcription; review low-confidence passages against the linked page.
 
 Additional Tesseract languages use `+`, for example `eng+hin`, and require the matching
 `.traineddata` files.
 
 ## Upload and performance defaults
 
-The default limits are 25 MB and 300 pages. These are application defaults rather than PDF
+The default limits are 100 MB and 500 pages. These are application defaults rather than PDF
 format limits. For larger documents, also consider OCR page count, rendered image pixels,
 extracted character count, disk quota, worker CPU, and reverse-proxy request limits.
 
 Relevant settings include:
 
 ```dotenv
-MAX_UPLOAD_SIZE_MB=25
-MAX_PDF_PAGES=300
+MAX_UPLOAD_SIZE_MB=100
+MAX_PDF_PAGES=500
 MAX_TOTAL_DOCUMENTS=1000
 MAX_PAGE_CHARACTERS=250000
-MAX_EXTRACTED_CHARACTERS=5000000
-OCR_MAX_PAGES=300
+MAX_EXTRACTED_CHARACTERS=10000000
+OCR_MAX_PAGES=500
 OCR_MAX_IMAGE_PIXELS=20000000
-MAX_CONCURRENT_INDEX_JOBS=2
+OCR_VISION_MAX_PAGES_PER_DOCUMENT=12
+MAX_CONCURRENT_INDEX_JOBS=1
 EMBEDDING_BATCH_SIZE=64
 ```
 
 Uploads are copied in bounded chunks. OCR and embeddings run after upload in a background
 job, so the browser receives progress instead of waiting on one long HTTP request. Native
 extraction, OCR results, model clients, and unchanged indexes are reused where safe.
+Active indexing can be cancelled between processing stages, interrupted jobs recover after
+restart, and the UI can refresh all ready documents in one request.
 
 ## Answer modes
 
-- **Quick:** at most four passages and a short output.
-- **Balanced:** hybrid retrieval and normal explanatory output.
-- **Deep:** follow-up rewriting, additional search queries, more evidence, and a longer answer.
+- **Quick:** instant extractive answer from cited passages; no model wait.
+- **Balanced:** concise local-AI synthesis with Qwen3 0.6B, normally the best speed/quality choice.
+- **Deep:** broader retrieval and local synthesis with Qwen3 1.7B; slower but more detailed.
 
 All modes stream text to the browser. Deep mode intentionally takes longer and makes more
 model/retrieval calls. Retrieval remains limited to selected, ready documents.
+
+Task mode is independent of answer depth: use `summary`, `compare`, `extract`, `quiz`, or
+`translate` when a specific output shape is required. Advanced tasks use Ollama even with
+Quick depth when it is available, while the evidence fallback remains active.
 
 ## Main API endpoints
 
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `GET` | `/health` | Provider, OCR, and limit status without exposing secrets |
+| `POST` | `/ollama/warmup` | Preload the Balanced Ollama model to reduce first-answer delay |
+| `POST` | `/reranker/warmup` | Install/load the local semantic reranker |
 | `POST` | `/upload/` | Validate, deduplicate, and store a PDF |
 | `GET` | `/documents/` | List documents and processing status |
 | `GET` | `/documents/{id}/status` | Latest document and indexing-job state |
 | `GET` | `/documents/{id}/text` | Native/OCR extraction details |
 | `GET` | `/documents/{id}/chunks` | Token-aware chunks and metadata |
 | `GET` | `/documents/{id}/file` | Open the original PDF securely |
+| `GET` | `/documents/{id}/pages/{page}/preview` | Render a page with an optional evidence highlight |
 | `POST` | `/documents/{id}/index` | Queue indexing; use `force=true` to rebuild |
+| `POST` | `/documents/{id}/index/cancel` | Cancel active indexing safely |
+| `POST` | `/documents/index` | Bulk queue or refresh documents |
 | `GET` | `/documents/index-jobs/{job_id}` | Poll a specific job |
 | `POST` | `/documents/search` | Scoped dense or hybrid retrieval |
 | `POST` | `/chat/` | Non-streamed grounded answer |
 | `POST` | `/chat/stream` | SSE answer stream used by the frontend |
+| `POST` | `/quality/feedback` | Store local helpful/not-helpful feedback |
+| `GET` | `/quality/summary` | Aggregated latency, grounding, and feedback metrics |
+| `GET` | `/quality/runs` | Recent local answer diagnostics |
 | `DELETE` | `/documents/{id}` | Delete PDF, extraction cache, metadata, and vectors |
 
 Example scoped chat request:
@@ -175,6 +229,8 @@ Example scoped chat request:
   "question": "What are the main conclusions?",
   "document_ids": ["0123456789abcdef0123456789abcdef"],
   "mode": "balanced",
+  "task": "summary",
+  "response_language": "English",
   "k": 5,
   "history": []
 }
@@ -191,8 +247,21 @@ Set-Location backend
 ```
 
 The suite covers upload validation, size/page limits, duplicate handling, authentication,
-native extraction, real Tesseract OCR, mocked handwriting fallback and caching, persistent
-jobs, quota errors, document-scoped hybrid retrieval, grounded sources, and SSE streaming.
+native extraction, real Tesseract OCR, mocked local-vision handwriting fallback and caching,
+persistent/cancellable jobs, semantic reranking, table chunks, page previews, answer caching,
+quality feedback, evaluation metrics, grounded sources, and SSE streaming.
+
+To run a repeatable quality benchmark, copy and edit the example dataset, then run:
+
+```powershell
+Set-Location backend
+Copy-Item evaluation/cases.example.json evaluation/cases.json
+..\venv\Scripts\python.exe scripts/evaluate.py evaluation/cases.json --output evaluation/latest.report.json --fail-under 0.8
+```
+
+Cases can select PDFs by filename or document ID and check expected answer terms, source
+pages, citation coverage, latency, and an overall minimum score. Evaluation bypasses the
+answer cache by default.
 
 ## Docker
 
@@ -202,9 +271,10 @@ Create `backend/.env`, then run:
 docker compose up --build
 ```
 
-The frontend is exposed on port `5173` and the API on `8000`. Named volumes preserve PDFs,
-metadata/extraction caches, vectors, and logs. The backend image includes English Tesseract
-data and runs as a non-root user.
+The frontend is exposed on port `5173`, the API on `8000`, and Ollama on `11434`. Compose
+downloads both text models and the Qwen vision model, and keeps Ollama, MiniLM, PDFs, extraction caches,
+vectors, metadata, and logs in named volumes. The backend includes English Tesseract data
+and runs as a non-root user.
 
 ## Production boundary
 

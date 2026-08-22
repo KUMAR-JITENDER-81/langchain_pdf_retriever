@@ -117,6 +117,38 @@ def test_chat_returns_rich_sources_without_external_generation(monkeypatch):
     assert data["sources"][0]["filename"] == "orchid.pdf"
     assert data["sources"][0]["page"] == 1
     assert data["mode"] == "balanced"
+    assert len(data["answer_id"]) == 32
+    assert data["diagnostics"]["candidate_count"] >= 1
+    assert data["diagnostics"]["total_ms"] >= data["diagnostics"]["retrieval_ms"]
+
+
+def test_chat_works_with_builtin_local_answer_provider(monkeypatch):
+    configure_local_test_models(monkeypatch)
+    monkeypatch.setattr(settings, "GENERATION_PROVIDER", "local")
+    monkeypatch.setattr(settings, "LOCAL_ANSWER_MODEL", "extractive-v1")
+    client = TestClient(app)
+    document_id = upload_and_index(
+        client,
+        "local-answer.pdf",
+        "Object-oriented programming organizes software around objects and classes. "
+        "Encapsulation keeps state together with the methods that manage it. " * 5,
+    )
+
+    response = client.post(
+        "/chat/",
+        json={
+            "question": "What is object-oriented programming about?",
+            "document_ids": [document_id],
+            "mode": "balanced",
+            "k": 5,
+        },
+    )
+    data = response.json()["data"]
+
+    assert response.status_code == 200
+    assert "object" in data["answer"].lower()
+    assert "[Source 1]" in data["answer"]
+    assert any("entirely locally" in warning for warning in data["warnings"])
 
 
 def test_chat_stream_emits_sources_tokens_and_done(monkeypatch):
@@ -145,3 +177,32 @@ def test_chat_stream_emits_sources_tokens_and_done(monkeypatch):
     assert "event: token" in response.text
     assert "ORCHID-4829" in response.text
     assert "event: done" in response.text
+    assert '"answer_id"' in response.text
+    assert '"diagnostics"' in response.text
+
+
+def test_repeated_question_uses_document_versioned_answer_cache(monkeypatch):
+    configure_local_test_models(monkeypatch)
+    monkeypatch.setattr(settings, "GENERATION_PROVIDER", "local")
+    monkeypatch.setattr(settings, "QUICK_MODE_LOCAL", True)
+    monkeypatch.setattr(settings, "ANSWER_CACHE_ENABLED", True)
+    client = TestClient(app)
+    document_id = upload_and_index(
+        client,
+        "cache.pdf",
+        "The launch code is ORCHID-4829 and the launch owner is Maya. " * 6,
+    )
+    payload = {
+        "question": "What is the launch code?",
+        "document_ids": [document_id],
+        "mode": "quick",
+        "k": 4,
+    }
+
+    first = client.post("/chat/", json=payload).json()["data"]
+    second = client.post("/chat/", json=payload).json()["data"]
+
+    assert first["diagnostics"]["cache_hit"] is False
+    assert second["diagnostics"]["cache_hit"] is True
+    assert second["answer"] == first["answer"]
+    assert second["answer_id"] != first["answer_id"]

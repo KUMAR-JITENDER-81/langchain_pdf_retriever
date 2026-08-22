@@ -14,5 +14,8 @@ def isolate_runtime_paths(tmp_path, monkeypatch):
         str(tmp_path / "data" / "extractions"),
     )
     monkeypatch.setattr(settings, "OCR_ENABLED", False)
-    monkeypatch.setattr(settings, "OPENAI_OCR_FALLBACK", False)
+    monkeypatch.setattr(settings, "OLLAMA_OCR_FALLBACK", False)
+    monkeypatch.setattr(settings, "OLLAMA_WARMUP_ON_START", False)
+    monkeypatch.setattr(settings, "AUTO_RETRY_LEGACY_PROVIDER_FAILURES", False)
     monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", False)
+    monkeypatch.setattr(settings, "RERANKER_ENABLED", False)

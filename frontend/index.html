@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="OCR, search, and chat with PDF documents." />
     <title>LangChain PDF Retriever</title>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=0.8.0" />
   </head>
   <body>
     <main class="shell">
@@ -15,7 +15,7 @@
           <h1>Ask the page,<br /><span>not the void.</span></h1>
           <p class="subtitle">
             Upload searchable, scanned, or handwritten PDFs. Answers stay grounded in
-            the documents you select.
+            the documents you select, run privately on this computer, and require no paid API.
           </p>
         </div>
         <div id="service-health" class="health" aria-live="polite">
@@ -54,6 +54,7 @@
           </div>
           <div class="heading-actions">
             <button id="select-ready" class="ghost" type="button">Select ready</button>
+            <button id="reindex-ready" class="ghost" type="button">Refresh ready</button>
             <button id="refresh-documents" class="ghost" type="button">Refresh</button>
           </div>
         </div>
@@ -69,13 +70,34 @@
           <span id="selected-count" class="selection-count">0 selected</span>
         </div>
 
+        <div id="local-ai-panel" class="local-ai-panel" aria-live="polite">
+          <div class="local-ai-copy">
+            <strong id="local-ai-title">Checking local AI…</strong>
+            <span id="local-ai-detail">Connecting to Ollama and checking installed models.</span>
+          </div>
+          <button id="warmup-ai" class="ghost" type="button" disabled>Warm up AI</button>
+        </div>
+
         <form id="chat-form">
+          <label for="answer-task" class="field-label">Task</label>
+          <select id="answer-task">
+            <option value="answer" selected>Answer a question</option>
+            <option value="summary">Summarize selected PDFs</option>
+            <option value="compare">Compare selected PDFs</option>
+            <option value="extract">Extract structured information</option>
+            <option value="quiz">Create a study quiz</option>
+            <option value="translate">Translate cited information</option>
+          </select>
           <label for="answer-mode" class="field-label">Answer depth</label>
           <select id="answer-mode">
-            <option value="quick">Quick — concise and fast</option>
-            <option value="balanced" selected>Balanced — useful detail</option>
-            <option value="deep">Deep — multi-query analysis</option>
+            <option value="quick">Quick — instant cited evidence</option>
+            <option value="balanced" selected>Balanced — local AI answer</option>
+            <option value="deep">Deep — local AI synthesis (slower)</option>
           </select>
+          <div id="language-field" class="language-field hidden">
+            <label for="response-language" class="field-label">Translate into</label>
+            <input id="response-language" type="text" maxlength="40" value="Hindi" />
+          </div>
           <label for="question" class="field-label">Question</label>
           <textarea
             id="question"
@@ -84,6 +106,13 @@
             placeholder="What does the document say about…?"
             required
           ></textarea>
+          <div class="suggestions" aria-label="Suggested questions">
+            <button class="suggestion" type="button" data-task="summary" data-question="Summarize the selected PDFs and list their main topics.">Summarize</button>
+            <button class="suggestion" type="button" data-question="What are the most important concepts explained in this PDF?">Key concepts</button>
+            <button class="suggestion" type="button" data-question="List the main conclusions or takeaways from this PDF.">Takeaways</button>
+            <button class="suggestion" type="button" data-task="compare" data-question="Compare the selected PDFs and explain their main similarities and differences.">Compare</button>
+            <button class="suggestion" type="button" data-task="quiz" data-question="Create a five-question study quiz from the selected PDFs.">Quiz</button>
+          </div>
           <div class="chat-actions">
             <button id="ask-button" type="submit">Ask selected documents</button>
             <button id="stop-button" class="danger hidden" type="button">Stop</button>
@@ -92,12 +121,83 @@
 
         <p id="chat-status" class="status" aria-live="polite"></p>
         <article id="answer" class="answer hidden" aria-live="polite">
+          <div class="answer-toolbar">
+            <strong>Answer</strong>
+            <div>
+              <button id="copy-answer" class="ghost" type="button">Copy</button>
+              <button id="clear-answer" class="ghost" type="button">Clear</button>
+            </div>
+          </div>
+          <div id="answer-meta" class="answer-meta"></div>
+          <div id="answer-diagnostics" class="answer-diagnostics"></div>
           <div id="answer-text" class="answer-text"></div>
           <div id="answer-warnings" class="warnings hidden"></div>
           <div id="answer-sources" class="sources"></div>
+          <section id="answer-feedback" class="feedback-panel hidden" aria-label="Answer feedback">
+            <div class="feedback-heading">
+              <div>
+                <strong>Help improve local answers</strong>
+                <span>Your feedback stays on this computer.</span>
+              </div>
+              <div class="feedback-rating" role="group" aria-label="Was this answer helpful?">
+                <button class="ghost" type="button" data-feedback-rating="helpful">Helpful</button>
+                <button class="ghost" type="button" data-feedback-rating="not_helpful">Needs work</button>
+              </div>
+            </div>
+            <div id="feedback-details" class="feedback-details hidden">
+              <span class="field-label">What should improve?</span>
+              <div id="feedback-reasons" class="feedback-reasons">
+                <button class="feedback-reason" type="button" data-feedback-reason="incorrect">Incorrect</button>
+                <button class="feedback-reason" type="button" data-feedback-reason="missing_information">Missing information</button>
+                <button class="feedback-reason" type="button" data-feedback-reason="wrong_source">Wrong source</button>
+                <button class="feedback-reason" type="button" data-feedback-reason="ocr_problem">OCR problem</button>
+                <button class="feedback-reason" type="button" data-feedback-reason="too_slow">Too slow</button>
+                <button class="feedback-reason" type="button" data-feedback-reason="hard_to_read">Hard to read</button>
+              </div>
+              <label for="feedback-comment" class="field-label">Optional note</label>
+              <textarea id="feedback-comment" rows="2" maxlength="1000" placeholder="Tell us what was missing or wrong."></textarea>
+              <button id="submit-feedback" type="button">Save feedback</button>
+            </div>
+            <p id="feedback-status" class="status" aria-live="polite"></p>
+          </section>
         </article>
       </section>
+
+      <section class="card quality-card">
+        <div class="card-heading">
+          <div>
+            <p class="step">QUALITY</p>
+            <h2>Local answer health</h2>
+          </div>
+          <button id="refresh-quality" class="ghost" type="button">Refresh metrics</button>
+        </div>
+        <div id="quality-metrics" class="quality-metrics">
+          <div><strong>—</strong><span>Answers measured</span></div>
+          <div><strong>—</strong><span>Helpful feedback</span></div>
+          <div><strong>—</strong><span>Average response</span></div>
+          <div><strong>—</strong><span>Grounding checks</span></div>
+        </div>
+        <p id="quality-detail" class="quiet quality-detail">
+          Automatic grounding checks measure citations and retrieval confidence; they are not a guarantee of factual correctness.
+        </p>
+      </section>
     </main>
-    <script src="app.js"></script>
+    <div id="preview-overlay" class="preview-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+      <aside class="preview-drawer">
+        <div class="preview-toolbar">
+          <div>
+            <strong id="preview-title">Source preview</strong>
+            <span id="preview-detail"></span>
+          </div>
+          <div>
+            <button id="preview-open-full" class="ghost" type="button">Open full PDF</button>
+            <button id="preview-close" class="ghost" type="button" aria-label="Close source preview">Close</button>
+          </div>
+        </div>
+        <div id="preview-status" class="preview-status">Loading page…</div>
+        <img id="preview-image" class="preview-image hidden" alt="Highlighted source page" />
+      </aside>
+    </div>
+    <script src="app.js?v=0.8.0"></script>
   </body>
 </html>
